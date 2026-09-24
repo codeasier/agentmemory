@@ -352,6 +352,14 @@ export async function findUnindexedObservations(
   return { sessions: sessions.length, missing }
 }
 
+export async function reconcileIndex(kv: StateKV): Promise<number> {
+  const idx = getSearchIndex()
+  const { missing } = await findUnindexedObservations(kv)
+  const stillMissing = missing.filter((obs) => !idx.has(obs.id))
+  if (stillMissing.length === 0) return 0
+  return indexRecords(stillMissing, [])
+}
+
 export async function rebuildIndex(kv: StateKV): Promise<number> {
   const idx = getSearchIndex()
   idx.clear()

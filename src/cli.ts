@@ -66,14 +66,18 @@ import {
 } from "./cli/engine-launch.js";
 import { runtimeMetadataPath } from "./runtime-paths.js";
 import { createStartupStderrCapture } from "./cli/startup-stderr.js";
-import { renderEngineConfig } from "./cli/engine-config.js";
+import {
+  clearPersistedBuiltinConfig,
+  renderEngineConfig,
+} from "./cli/engine-config.js";
+import { SHUTDOWN_HARD_EXIT_MS } from "./shutdown.js";
 import { processStatIsRunning } from "./cli/process-state.js";
 import { renderSplash } from "./cli/splash.js";
 import { isFirstRun, readPrefs, resetPrefs, writePrefs } from "./cli/preferences.js";
 import { runOnboarding } from "./cli/onboarding.js";
 import { setBootVerbose } from "./logger.js";
 import { hydrateProcessEnvFromFile } from "./config.js";
-import { III_PINNED_VERSION, VERSION } from "./version.js";
+import { VERSION } from "./version.js";
 import { getAllTools, ESSENTIAL_TOOLS } from "./mcp/tools-registry.js";
 import { knownAgents } from "./cli/connect/index.js";
 
@@ -112,18 +116,17 @@ if (args.includes("--version") || args.includes("-V")) {
   process.exit(0);
 }
 
-// Pinned iii-engine version. The unpinned `install.iii.dev/iii/main/install.sh`
-// script tracks `latest`, which made every fresh agentmemory install pull
-// engine 0.11.6 — and 0.11.6 introduces a new sandbox-everything-via-
-// `iii worker add` worker model that agentmemory hasn't been refactored
-// for yet (the CLI still registers its worker directly through the SDK). The
-// architectural mismatch surfaces as EPIPE reconnect loops and empty
-// search results after save. Pin to v0.11.2 — the last engine that runs
-// agentmemory's current worker model cleanly — until the refactor lands.
-// Override env var AGENTMEMORY_III_VERSION lets users on the sandbox
-// model already point at a newer engine without us cutting a release.
+// Pinned iii-engine version. The engine and the iii-sdk in package.json must
+// stay on the same release: the worker speaks that engine's wire protocol and
+// the unpinned installer tracks `latest`. 0.19.7 is the last release before
+// the 0.20.0 SDK reorganization (ISdk -> IIIClient, helpers package) and the
+// first line that keeps HTTP routes owned by the reconnecting worker, which
+// stops the REST 404s after an engine reconnect. Bump this constant and the
+// package.json dependency together. AGENTMEMORY_III_VERSION overrides the pin
+// for anyone running a self-managed engine.
+const IIPINNED_DEFAULT_VERSION = "0.19.7";
 const IIPINNED_VERSION =
-  process.env["AGENTMEMORY_III_VERSION"] || III_PINNED_VERSION;
+  process.env["AGENTMEMORY_III_VERSION"] || IIPINNED_DEFAULT_VERSION;
 
 // Map Node platform/arch → the asset name iii-hq/iii ships under
 // https://github.com/iii-hq/iii/releases/download/iii/v<version>/<asset>
@@ -150,7 +153,7 @@ function iiiReleaseAsset(): string | null {
 function iiiReleaseUrl(): string | null {
   const asset = iiiReleaseAsset();
   if (!asset) return null;
-  // Tag name is monorepo-prefixed: `iii/v0.11.2`. Slash is URL-encoded
+  // Tag name is monorepo-prefixed: `iii/v0.19.7`. Slash is URL-encoded
   // by GitHub when serving the download path, hence `iii/v...` not `iii%2Fv...`.
   return `https://github.com/iii-hq/iii/releases/download/iii/v${IIPINNED_VERSION}/${asset}`;
 }
@@ -525,7 +528,7 @@ function whichBinary(name: string): string | null {
 // isolated from a user-managed iii on PATH or in ~/.local/bin. A
 // fresh box with iii 0.16.1 already on PATH refused to boot because the
 // hard-pin enforcer told users to overwrite their global install with
-// v0.11.2. Private install resolves the conflict without touching their
+// the pinned version. Private install resolves the conflict without touching their
 // existing iii.
 function agentmemoryBinDir(): string {
   if (IS_WINDOWS) {
@@ -578,8 +581,8 @@ function iiiBinVersion(binPath: string): string | null {
 // Resolve a compatible iii binary for the pinned engine version.
 //
 // Soft-warn lets the worker boot against a mismatched engine and crash at
-// runtime (state::list-not-found on v0.13.0+, sandbox-everything trap on
-// v0.11.6+). Hard-pin without a fallback leaves the user stuck — they
+// runtime (the SDK and engine wire protocol move together; 0.20+ renamed the
+// SDK surface entirely). Hard-pin without a fallback leaves the user stuck — they
 // either downgrade their global iii (breaking other consumers) or set
 // AGENTMEMORY_III_VERSION and hope it works.
 //
@@ -1554,6 +1557,19 @@ function prepareEngineLaunch(configPath: string): {
     const runtimePath = runtimeConfigPath(dataDirResolution.dataDir);
     mkdirSync(dirname(runtimePath), { recursive: true });
     writeFileSync(runtimePath, rewritten, "utf-8");
+    try {
+      const cleared = clearPersistedBuiltinConfig(cwd, rewritten);
+      if (cleared.length > 0) {
+        vlog(
+          `cleared ${cleared.length} persisted builtin config entries so the rendered runtime config seeds the engine again`,
+        );
+      }
+    } catch (err) {
+      p.log.error(
+        `${String(err instanceof Error ? err.message : err)}. The engine would ignore the rendered runtime config and keep its previously persisted ports and timeouts. Fix the permissions under ${join(cwd, "data", "configuration")} and run agentmemory start again.`,
+      );
+      process.exit(1);
+    }
     if (selectedInstance === 0 && dataDirResolution.source === "default") {
       for (const m of legacyDataMigrations(
         process.cwd(),
@@ -1971,8 +1987,8 @@ function printReadyHint(consoleState: IiiConsoleState): void {
 async function main() {
   await assertRuntimePortOwnership();
   // Booting a second instance next to a live daemon registers a duplicate
-  // worker on the running engine, and on iii 0.11.2 the second instance's
-  // shutdown tears down the daemon's HTTP trigger routing (every
+  // worker on the running engine, and before iii 0.19.2 the second instance's
+  // shutdown tore down the daemon's HTTP trigger routing (every
   // /agentmemory/* route 404s until a full engine restart). Refuse instead.
   // A different --instance resolves to a different port, so multi-instance
   // setups are unaffected.
@@ -3183,8 +3199,8 @@ async function runUpgrade() {
         label: "Refreshing dependencies (pnpm install)",
       });
       requireSuccess(installOk, "pnpm install");
-      runCommand(pnpmBin, ["up", "iii-sdk@0.11.2"], {
-        label: "Pinning iii-sdk@0.11.2",
+      runCommand(pnpmBin, ["up", `iii-sdk@${IIPINNED_DEFAULT_VERSION}`], {
+        label: `Pinning iii-sdk@${IIPINNED_DEFAULT_VERSION}`,
         optional: true,
       });
     } else if (npmBin) {
@@ -3192,8 +3208,8 @@ async function runUpgrade() {
         label: "Refreshing dependencies (npm install)",
       });
       requireSuccess(installOk, "npm install");
-      runCommand(npmBin, ["install", "iii-sdk@0.11.2"], {
-        label: "Pinning iii-sdk@0.11.2",
+      runCommand(npmBin, ["install", `iii-sdk@${IIPINNED_DEFAULT_VERSION}`], {
+        label: `Pinning iii-sdk@${IIPINNED_DEFAULT_VERSION}`,
         optional: true,
       });
     } else {
@@ -3542,7 +3558,7 @@ async function runStop(): Promise<void> {
       // instead of preserving for manual cleanup.
       const s = p.spinner();
       s.start(`Stopping orphaned agentmemory worker (pid ${workerPid})...`);
-      const ok = await signalAndWait(workerPid, "SIGTERM", 3000);
+      const ok = await signalAndWait(workerPid, "SIGTERM", SHUTDOWN_HARD_EXIT_MS + 1000);
       s.stop(ok ? `Stopped worker pid ${workerPid}` : `Failed to stop worker pid ${workerPid}`);
       clearEnginePidfile();
       clearEngineState();
