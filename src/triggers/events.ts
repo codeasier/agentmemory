@@ -1,4 +1,4 @@
-import { TriggerAction, type ISdk } from "iii-sdk";
+import { TriggerAction, type IIIClient } from "iii-sdk";
 import type { CompressedObservation, HookPayload, Memory, Session } from "../types.js";
 import { KV, STREAM, fingerprintId } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
@@ -63,7 +63,7 @@ function consolidationDue(kv: StateKV): Promise<boolean> {
   return result;
 }
 
-export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
+export function registerEventTriggers(sdk: IIIClient, kv: StateKV): void {
   const watermarkLogAt = new Map<string, number>();
 
   // A failed graph extraction used to set graphExtractRetryAt and then rely
@@ -461,7 +461,7 @@ function isOutOfAgentScope(record: { agentId?: string } | undefined): boolean {
 }
 
 async function sendViewerEvent(
-  sdk: ISdk,
+  sdk: IIIClient,
   id: string,
   type: string,
   data: Record<string, unknown>,

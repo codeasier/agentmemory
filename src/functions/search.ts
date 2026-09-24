@@ -1,4 +1,4 @@
-import type { ISdk } from 'iii-sdk'
+import type { IIIClient } from 'iii-sdk'
 import type { IndexPersistenceStatus } from "../state/index-persistence.js";
 import type { CompactSearchResult, CompressedObservation, Memory, SearchResult, Session } from '../types.js'
 import { KV } from '../state/schema.js'
@@ -557,7 +557,7 @@ export async function backfillVectors(jobs: VectorBackfillJob[]): Promise<number
   return added
 }
 
-export function registerSearchFunction(sdk: ISdk, kv: StateKV): void {
+export function registerSearchFunction(sdk: IIIClient, kv: StateKV): void {
   sdk.registerFunction(
     'mem::search',
     async (data: {

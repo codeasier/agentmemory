@@ -234,7 +234,7 @@ describe("status wiring", () => {
   const viewer = readFileSync("src/viewer/index.html", "utf-8");
 
   it("registers GET /agentmemory/status behind the same auth check as the other endpoints", () => {
-    expect(api).toMatch(/registerFunction\("api::status",\s*async \(req: ApiRequest\): Promise<Response> => \{\s*const authErr = checkAuth\(req, secret\);/);
+    expect(api).toMatch(/registerFunction\("api::status",\s*async \(req: HttpRequest\): Promise<Response> => \{\s*const authErr = checkAuth\(req, secret\);/);
     expect(api).toMatch(/api_path: "\/agentmemory\/status", http_method: "GET"/);
     expect(api).toMatch(/default-src 'none'; style-src 'nonce-\$\{nonce\}'/);
   });

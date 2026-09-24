@@ -1,4 +1,4 @@
-import type { ISdk } from "iii-sdk";
+import type { IIIClient } from "iii-sdk";
 import type { AuditEntry } from "../types.js";
 import { KV, generateId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
@@ -169,7 +169,7 @@ export async function drainAuditSweeps(
 }
 
 export function registerAuditSweepFunction(
-  sdk: ISdk,
+  sdk: IIIClient,
   kv: StateKV,
 ): void {
   sdk.registerFunction("mem::audit-sweep", async () => sweepAuditLog(kv));

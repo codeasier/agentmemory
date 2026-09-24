@@ -1,4 +1,4 @@
-import type { ISdk } from "iii-sdk";
+import type { IIIClient } from "iii-sdk";
 import type {
   Session,
   CompressedObservation,
@@ -164,7 +164,7 @@ async function exportCollectionPage(
   return result;
 }
 
-export function registerExportImportFunction(sdk: ISdk, kv: StateKV): void {
+export function registerExportImportFunction(sdk: IIIClient, kv: StateKV): void {
   sdk.registerFunction("mem::export",
     async (data?: { maxSessions?: number; offset?: number; collection?: string; limit?: number; sessionId?: string }) => {
       const rawCollection =
