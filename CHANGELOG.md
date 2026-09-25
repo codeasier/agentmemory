@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **A zero audit delete batch disables the sweep entirely.** `AGENTMEMORY_AUDIT_SWEEP_DELETE_BATCH=0` now skips the scan like `AGENTMEMORY_AUDIT_MAX=0`, instead of materializing the whole audit log every interval while deleting nothing and reporting a backlog forever.
 - **The standalone MCP fallback serves the full 1000-row audit limit.** `memory_audit` no longer silently clamps to the generic 100-row limit in local fallback mode.
 - **The post-tool-use hook keeps object shape for oversized outputs.** Client-side truncation walks the payload and keeps whole entries within the 32k ingress budget instead of flattening to a sliced string that destroyed the fields the server's structure-preserving truncation exists to keep.
+- **The "Memory elevated" alert no longer fires on a healthy process (#1406, aligned with upstream #1409).** The health check divided the heap in use by the heap Node had allocated so far, which Node keeps just above what is in use, so a normal process read 90% or more and raised the alert once its memory passed 512 MB. The check now divides by the V8 heap limit, which is about 4 GB on 64-bit Node by default, and the viewer's Heap gauge shows used against that limit. The reported 589 of 629 MB is 14% of the limit and no longer alerts.
 
 ### Added
 
