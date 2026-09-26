@@ -4,6 +4,25 @@ All notable changes to agentmemory will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Observation capture no longer grows the persisted live-stream store.** Raw and compressed observation events use `stream::send` instead of `stream::set`; the viewer still receives live updates and REST remains the history source, but `data/stream_store` no longer accumulates a write-only second and third copy of every observation.
+- **Server-side capture payloads are bounded without flattening structured tool data.** `tool_input`, `tool_output`, prompts and the raw envelope are trimmed to configurable character budgets (`AGENTMEMORY_OBSERVE_*`); object fields such as `file_path` survive truncation, and `0` disables an individual bound.
+- **Graph and semantic provenance are bounded.** Graph nodes, edges, insights and semantic session provenance keep only the freshest source ids instead of growing for the life of the session.
+- **Audit retention runs as a bounded background sweep.** `recordAudit` stays a single KV write. `mem::audit-sweep` trims on a timer, caps deletes per pass, retains rows whose delete failed, and never evicts rows that share the retention boundary's millisecond. `AGENTMEMORY_AUDIT_MAX=0` keeps the log unbounded; query limits are capped at 1000.
+- **Stranded index generations are reclaimed safely (#1115).** Every published generation is recorded in a retry-preserving ledger before its first shard write. Boot reclaims at most `AGENTMEMORY_INDEX_RECLAIM_BOOT_MAX_SHARDS` shards in a background pass, later saves reclaim the remainder, and a failed delete keeps its ledger entry for the next attempt.
+- **Index saves are serialised instead of interleaved.** Concurrent save callers collapse into one running save plus one queued save rather than several writers racing on the same shards.
+- **Eviction removes observations from BM25 and vector search.** Deleted observations no longer remain as in-memory postings that are re-serialized on every index save; dry runs leave the index untouched.
+- **Repeated session stop no longer re-extracts the entire graph.** Per-turn graph extraction normally dispatches only the observations added since the last pass. An observation-id fingerprint detects late compression and eviction, mixed-precision timestamps compare by epoch time, and an invalid watermark falls back to a full extraction rather than skipping data.
+- **Bundled engine configs disable the in-memory observability store by default.** Existing user-owned `iii-config.yaml` files are not rewritten; operators who do not use the iii console should set `iii-observability.enabled: false` once on upgrading.
+
+### Added
+
+- **Scheduled eviction is available but opt-in.** `AGENTMEMORY_EVICTION_ENABLED=true` runs `mem::evict` on a timer (24 h by default) instead of requiring a manual REST call.
+- **A committed `bench:memory-retention` harness records the before/after evidence.** Two identical 2,000-observation cycles against upstream main measured 82.5% less second-cycle RSS growth and 70.9% less persisted data on the fix branch, at a 15.7–27.2% synthetic load-throughput cost. The recorded baseline predates this branch's rebase onto `v0.9.29`, so it is not a `v0.9.29` comparison; see the result file. The iii `file_based` allocator baseline remains and is not eliminated by this change.
+
 ## [0.9.29] — 2026-08-16
 
 Release wave in two parts. Recall quality: hybrid ranking reaches the primary recall path, lessons get a real index, every record learns where it came from, the knowledge graph populates keyless, and agent scoping threads through all save paths — plus connector parity for pi and Codex, a new DeepSeek Harness connector, current provider model defaults, and a viewer clarity pass. Foundation: the `.env` file now applies everywhere, imports become searchable, consolidation runs on session stop, twelve MCP-only agents get activated on connect, and every capture surface agrees on what "project" means. No breaking changes; read the upgrade notes for behavior changes you will notice.

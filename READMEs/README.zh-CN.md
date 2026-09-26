@@ -1173,11 +1173,11 @@ iii console --port 3114 \
   <em>Traces:每个记忆操作的瀑布/火焰/服务分解。</em>
 </p>
 
-**Traces 已开启:**
+**Traces 默认关闭:**
 
-`iii-config.yaml` 出厂启用 `iii-observability` worker(`exporter: memory`、`sampling_ratio: 1.0`、指标 + 日志)。无需额外配置;agentmemory 启动那一刻,每个记忆操作都会发出一个 trace span 和一个控制台可读的结构化日志。
+`iii-config.yaml` 默认禁用 `iii-observability` worker,因为其内存中的 trace、指标和日志存储会在持续捕获时显著增加引擎 RSS。需要使用 iii 控制台时,在 `~/.agentmemory/iii-config.yaml` 中设置 `enabled: true`;届时会记录结构化日志与 trace(`sampling_ratio: 1.0`)。已有安装会保留自己的配置文件,升级后如不需要控制台,请手动把其中的 `enabled` 改为 `false`。
 
-如果你想改为导出到 Jaeger/Honeycomb/Grafana Tempo,把 `exporter: memory` 改为 `exporter: otlp` 并按 iii 的可观测性文档设置收集器端点。
+如果要改为导出到 Jaeger/Honeycomb/Grafana Tempo,把 `exporter: memory` 改为 `exporter: otlp` 并按 iii 的可观测性文档设置收集器端点。
 
 > **提醒:** 控制台本身未强制鉴权;保持其绑定 `127.0.0.1`(默认)并永远不要对外暴露。
 
@@ -1195,7 +1195,7 @@ agentmemory **本身就是一个运行中的 [iii](https://iii.dev) 实例**。�
 iii worker add iii-pubsub          # 把记忆写入扇出到每个连接的实例
 iii worker add iii-cron            # 定时整合、衰减扫描、快照轮换
 iii worker add iii-queue           # 嵌入 + 压缩任务的持久重试
-iii worker add iii-observability   # 每个记忆操作的 OTEL traces(默认开启)
+iii worker add iii-observability   # 每个记忆操作的 OTEL traces(默认关闭)
 iii worker add iii-sandbox         # 在隔离 microVM 内运行召回到的代码
 iii worker add iii-database        # 切换 SQL 后端的状态适配器
 iii worker add mcp                 # 在 agentmemory 的 MCP 旁开通用 MCP 宿主
@@ -1208,7 +1208,7 @@ iii worker add mcp                 # 在 agentmemory 的 MCP 旁开通用 MCP �
 | [`iii-pubsub`](https://workers.iii.dev/workers/iii-pubsub) | 多实例记忆:每次 `remember` 扇出,每次 `search` 读取并集 |
 | [`iii-cron`](https://workers.iii.dev/workers/iii-cron) | 定时生命周期:夜间整合、周快照、按固定时钟衰减 |
 | [`iii-queue`](https://workers.iii.dev/workers/iii-queue) | 持久重试:失败的嵌入 + 压缩任务在重启后存活,无观测丢失 |
-| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | 每个函数的 OTEL traces、指标、日志,从第一天起就接入 `iii-config.yaml` |
+| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | 每个函数的 OTEL traces、指标、日志;`iii-config.yaml` 里默认关闭以省引擎内存 |
 | [`iii-sandbox`](https://workers.iii.dev/workers/iii-sandbox) | `memory_recall` 出来的代码在一次性 VM 中运行,不在你的 shell 中 |
 | [`iii-database`](https://workers.iii.dev/workers/iii-database) | 当默认的内存 KV 不够用时,SQL 后端状态适配器 |
 | [`mcp`](https://workers.iii.dev/workers/mcp) | 在 agentmemory 的旁边架设额外 MCP 服务器,共享同一引擎 |
