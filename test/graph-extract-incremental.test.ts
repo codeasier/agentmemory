@@ -75,7 +75,7 @@ type StoppedHandler = (data: {
   skipConsolidation?: boolean;
 }) => Promise<unknown>;
 
-function mockSdk(opts?: { rejectGraphExtract?: () => boolean }) {
+function mockSdk(opts?: { rejectGraphExtract?: () => boolean; failGraphExtract?: () => boolean }) {
   const handlers = new Map<string, StoppedHandler>();
   const trigger = vi.fn(
     async (input: { function_id: string; payload?: unknown }) => {
@@ -84,6 +84,11 @@ function mockSdk(opts?: { rejectGraphExtract?: () => boolean }) {
         opts?.rejectGraphExtract?.()
       ) {
         throw new Error("dispatch refused");
+      }
+      if (input.function_id === "mem::graph-extract") {
+        return opts?.failGraphExtract?.()
+          ? { success: false, error: "graph persistence failed" }
+          : { success: true };
       }
       if (input.function_id === "mem::summarize") {
         return { summary: "s", sessionId: SID };
@@ -114,7 +119,7 @@ function batches(trigger: ReturnType<typeof vi.fn>): string[][] {
     );
 }
 
-function harness(opts?: { rejectGraphExtract?: () => boolean }) {
+function harness(opts?: { rejectGraphExtract?: () => boolean; failGraphExtract?: () => boolean }) {
   const kv = persistentKV();
   const { sdk, handlers, trigger } = mockSdk(opts);
   registerEventTriggers(sdk as never, kv as never);
@@ -334,5 +339,40 @@ describe("graph-extract watermark never skips an observation", () => {
     expect(h.session()).toMatchObject({
       graphExtractedDigest: expect.any(String),
     });
+  });
+
+  it("does not advance the watermark when extraction returns a failure", async () => {
+    let fail = true;
+    const h = harness({ failGraphExtract: () => fail });
+    h.land(obs("a", "2026-01-01T00:00:01.000Z"));
+
+    await h.stop();
+    expect(h.session().graphExtractedAt).toBeUndefined();
+    fail = false;
+    await h.stop();
+
+    expect(batches(h.trigger)).toEqual([["a"], ["a"]]);
+    expect(h.session().graphExtractedAt).toBe("2026-01-01T00:00:01.000Z");
+  });
+
+  it("repairs an invalid session watermark after one full extraction", async () => {
+    const h = harness();
+    h.session().graphExtractedAt = "invalid";
+    h.land(obs("a", "2026-01-01T00:00:01.000Z"));
+    await h.stop();
+    h.land(obs("b", "2026-01-01T00:00:02.000Z"));
+    await h.stop();
+
+    expect(batches(h.trigger)).toEqual([["a"], ["b"]]);
+  });
+
+  it("treats malformed observation timestamps as the oldest, without repeat full extracts", async () => {
+    const h = harness();
+    h.land(obs("bad", "invalid"), obs("a", "2026-01-01T00:00:01.000Z"));
+    await h.stop();
+    h.land(obs("b", "2026-01-01T00:00:02.000Z"));
+    await h.stop();
+
+    expect(batches(h.trigger)).toEqual([["bad", "a"], ["b"]]);
   });
 });

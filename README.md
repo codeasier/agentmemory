@@ -1209,7 +1209,7 @@ iii console --port 3114 \
 
 **Traces are off by default:**
 
-`iii-config.yaml` keeps the `iii-observability` worker disabled because its in-memory trace, metric, and log stores materially increase engine RSS under sustained capture. Set `enabled: true` in `~/.agentmemory/iii-config.yaml` when you need the iii console; the shipped block then records structured logs and traces (`sampling_ratio: 1.0`). Existing installs keep their user config, so set `enabled: false` there once when upgrading if you do not need the console.
+`iii-config.yaml` keeps the `iii-observability` worker disabled because its in-memory trace, metric, and log stores materially increase engine RSS under sustained capture. Set `enabled: true` in `~/.agentmemory/iii-config.yaml` when you need the iii console; the shipped block then records structured logs and sampled traces (`sampling_ratio: 0.1`). Existing installs keep their user config, so set `enabled: false` there once when upgrading if you do not need the console.
 
 If you export to Jaeger/Honeycomb/Grafana Tempo instead, change `exporter: memory` to `exporter: otlp` and set the collector endpoint per iii's observability docs.
 

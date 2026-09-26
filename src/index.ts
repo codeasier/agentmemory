@@ -58,7 +58,7 @@ import { registerSmartSearchFunction } from "./functions/smart-search.js";
 import { registerRecentSearchesSweepFunction } from "./functions/recent-searches-sweep.js";
 import { registerProfileFunction } from "./functions/profile.js";
 import { registerAutoForgetFunction } from "./functions/auto-forget.js";
-import { registerAuditSweepFunction } from "./functions/audit.js";
+import { drainAuditSweeps, registerAuditSweepFunction } from "./functions/audit.js";
 import { registerExportImportFunction } from "./functions/export-import.js";
 import { registerEnrichFunction } from "./functions/enrich.js";
 import { registerClaudeBridgeFunction } from "./functions/claude-bridge.js";
@@ -586,7 +586,8 @@ async function main() {
 
   let auditSweepInFlight = false;
   if (getEnvVar("AGENTMEMORY_AUDIT_SWEEP_ENABLED") !== "false") {
-    const auditSweepTimer = setInterval(async () => {
+    let followUpTimer: ReturnType<typeof setTimeout> | undefined;
+    const runAuditSweep = async () => {
       if (auditSweepInFlight) {
         logger.warn("Audit sweep skipped — previous sweep still running");
         return;
@@ -594,14 +595,20 @@ async function main() {
       auditSweepInFlight = true;
       const startedAt = Date.now();
       try {
-        const stats = await sdk.trigger({
-          function_id: "mem::audit-sweep",
-          payload: {},
-        });
+        const { stats, followUp } = await drainAuditSweeps(() =>
+          sdk.trigger({ function_id: "mem::audit-sweep", payload: {} }),
+        );
         logger.info("Scheduled audit sweep complete", {
           stats,
           durationMs: Date.now() - startedAt,
         });
+        if (followUp && !followUpTimer) {
+          followUpTimer = setTimeout(() => {
+            followUpTimer = undefined;
+            void runAuditSweep();
+          }, Math.min(60_000, auditSweepIntervalMs));
+          followUpTimer.unref();
+        }
       } catch (err) {
         logger.warn("Scheduled audit sweep failed", {
           error: err instanceof Error ? err.message : String(err),
@@ -610,7 +617,8 @@ async function main() {
       } finally {
         auditSweepInFlight = false;
       }
-    }, auditSweepIntervalMs);
+    };
+    const auditSweepTimer = setInterval(runAuditSweep, auditSweepIntervalMs);
     auditSweepTimer.unref();
     bootLog(`Audit sweep: enabled (every ${auditSweepIntervalMs / 60000}m)`);
   }

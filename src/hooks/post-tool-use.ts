@@ -51,7 +51,7 @@ async function main() {
       data: {
         tool_name: toolName,
         tool_input: toolInput,
-        tool_output: cleanOutput,
+        tool_output: truncate(cleanOutput, 32000),
         ...(imageData ? { image_data: imageData } : {}),
       },
     }),
@@ -102,6 +102,15 @@ function extractImageData(output: unknown): { imageData: string | undefined; cle
   }
 
   return { imageData: undefined, cleanOutput: output };
+}
+
+function truncate(value: unknown, max: number): unknown {
+  if (typeof value === "string" && value.length > max) return value.slice(0, max) + "...[truncated]";
+  if (typeof value === "object" && value !== null) {
+    const str = JSON.stringify(value);
+    return str.length > max ? str.slice(0, max) + "...[truncated]" : value;
+  }
+  return value;
 }
 
 main().catch(() => process.exit(0));

@@ -145,16 +145,16 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
         const mark = session?.graphExtractedDigest;
         const incremental = isIncrementalGraphExtractionEnabled();
         const atMs = typeof at === "string" ? Date.parse(at) : Number.NaN;
-        const times = compressed.map((observation) =>
-          Date.parse(observation.timestamp),
-        );
-        const timestampsValid = times.every(Number.isFinite);
+        const times = compressed.map((observation) => {
+          const parsed = Date.parse(observation.timestamp);
+          return Number.isFinite(parsed) ? parsed : 0;
+        });
         let batch = compressed;
         let persistWatermark = false;
-        if (incremental && timestampsValid) {
-          if (typeof at !== "string") {
+        if (incremental) {
+          if (!Number.isFinite(atMs)) {
             persistWatermark = true;
-          } else if (Number.isFinite(atMs)) {
+          } else {
             const seen = compressed.filter((_, index) => times[index] <= atMs);
             if (observationFingerprint(seen) === mark) {
               batch = compressed.filter((_, index) => times[index] > atMs);
@@ -170,20 +170,17 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
           }
         }
         if (batch.length > 0) {
-          await sdk.trigger({
+          const result = await sdk.trigger<{ observations: CompressedObservation[] }, { success: boolean; error?: string }>({
             function_id: "mem::graph-extract",
             payload: { observations: batch },
-            action: TriggerAction.Void(),
           });
+          if (result?.success !== true) {
+            throw new Error(result?.error ?? "graph extraction did not confirm success");
+          }
           if (persistWatermark) {
-            let newest = batch[0];
-            for (const observation of batch.slice(1)) {
-              if (Date.parse(observation.timestamp) > Date.parse(newest.timestamp)) {
-                newest = observation;
-              }
-            }
+            const newest = times.reduce((max, time) => Math.max(max, time), 0);
             await kv.update(KV.sessions, data.sessionId, [
-              { type: "set", path: "graphExtractedAt", value: newest.timestamp },
+              { type: "set", path: "graphExtractedAt", value: new Date(newest).toISOString() },
               {
                 type: "set",
                 path: "graphExtractedDigest",

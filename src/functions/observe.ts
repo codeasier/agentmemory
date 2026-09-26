@@ -257,18 +257,22 @@ export function registerObserveFunction(
         }>(KV.sessions, payload.sessionId);
 
         if (maxObservationsPerSession && maxObservationsPerSession > 0) {
-          const observationCount =
+          let observationCount =
             typeof existingSession?.observationCount === "number"
               ? existingSession.observationCount
               : (
                   await kv.list(KV.observations(payload.sessionId))
                 ).length;
           if (observationCount >= maxObservationsPerSession) {
-            return {
-              success: false,
-              error: `Session observation limit reached (${maxObservationsPerSession})`,
-            };
+            observationCount = (await kv.list(KV.observations(payload.sessionId))).length;
+            if (observationCount >= maxObservationsPerSession) {
+              return {
+                success: false,
+                error: `Session observation limit reached (${maxObservationsPerSession})`,
+              };
+            }
           }
+          if (existingSession) existingSession.observationCount = observationCount;
         }
 
         // Existing session is the source of truth for agentId (even

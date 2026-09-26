@@ -195,4 +195,30 @@ describe("audit log retention", () => {
 
     expect(await queryAudit(kv as never, { limit: 5000 })).toHaveLength(1000);
   });
+
+  it("drains a bounded number of passes and requests a near-term follow-up", async () => {
+    const { drainAuditSweeps } = await import("../src/functions/audit.js");
+    const sweep = vi.fn(async () => ({
+      scanned: 20000, removed: 2000, failed: 0, remaining: 18000,
+      max: 5000, more: true,
+    }));
+
+    expect((await drainAuditSweeps(sweep)).followUp).toBe(true);
+    expect(sweep).toHaveBeenCalledTimes(4);
+  });
+
+  it("stops draining when timestamp ties or deletion failures prevent progress", async () => {
+    const { drainAuditSweeps } = await import("../src/functions/audit.js");
+    for (const stats of [
+      { removed: 0, failed: 0 },
+      { removed: 10, failed: 1 },
+    ]) {
+      const sweep = vi.fn(async () => ({
+        scanned: 30, remaining: 30 - stats.removed, max: 10,
+        more: true, ...stats,
+      }));
+      expect((await drainAuditSweeps(sweep)).followUp).toBe(false);
+      expect(sweep).toHaveBeenCalledTimes(1);
+    }
+  });
 });

@@ -82,7 +82,7 @@ describe("observe memory bounds", () => {
     delete process.env.AGENTMEMORY_OBSERVE_TOOL_INPUT_CHARS;
   });
 
-  it("uses the session counter for the cap without listing observations", async () => {
+  it("reconciles the session counter on reaching the cap", async () => {
     const { registerObserveFunction } = await import("../src/functions/observe.js");
     const sdk = mockSdk();
     const kv = mockKV();
@@ -91,6 +91,8 @@ describe("observe memory bounds", () => {
       observationCount: 2,
       status: "active",
     });
+    await kv.set("mem:obs:ses_counted", "obs_1", { id: "obs_1" });
+    await kv.set("mem:obs:ses_counted", "obs_2", { id: "obs_2" });
     registerObserveFunction(sdk as never, kv as never, undefined, 2);
     const listSpy = vi.spyOn(kv, "list");
 
@@ -105,7 +107,33 @@ describe("observe memory bounds", () => {
       success: false,
       error: "Session observation limit reached (2)",
     });
-    expect(listSpy).not.toHaveBeenCalled();
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows capture after an observation is deleted from a capped session", async () => {
+    const { registerObserveFunction } = await import("../src/functions/observe.js");
+    const sdk = mockSdk();
+    const kv = mockKV();
+    await kv.set("mem:sessions", "ses_deleted", {
+      id: "ses_deleted",
+      observationCount: 2,
+      status: "active",
+    });
+    await kv.set("mem:obs:ses_deleted", "old", { id: "old" });
+    registerObserveFunction(sdk as never, kv as never, undefined, 2);
+    const listSpy = vi.spyOn(kv, "list");
+
+    const result = await sdk.trigger("mem::observe", {
+      sessionId: "ses_deleted",
+      hookType: "post_tool_use",
+      timestamp: new Date().toISOString(),
+      data: { tool_name: "Read" },
+    });
+
+    expect(result).toMatchObject({ observationId: expect.any(String) });
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect((await kv.get<{ observationCount: number }>("mem:sessions", "ses_deleted"))?.observationCount).toBe(2);
+    expect((await kv.list("mem:obs:ses_deleted"))).toHaveLength(2);
   });
 
   it("falls back to listing only when the session counter is missing", async () => {

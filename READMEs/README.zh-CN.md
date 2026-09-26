@@ -1175,7 +1175,7 @@ iii console --port 3114 \
 
 **Traces 默认关闭:**
 
-`iii-config.yaml` 默认禁用 `iii-observability` worker,因为其内存中的 trace、指标和日志存储会在持续捕获时显著增加引擎 RSS。需要使用 iii 控制台时,在 `~/.agentmemory/iii-config.yaml` 中设置 `enabled: true`;届时会记录结构化日志与 trace(`sampling_ratio: 1.0`)。已有安装会保留自己的配置文件,升级后如不需要控制台,请手动把其中的 `enabled` 改为 `false`。
+`iii-config.yaml` 默认禁用 `iii-observability` worker,因为其内存中的 trace、指标和日志存储会在持续捕获时显著增加引擎 RSS。需要使用 iii 控制台时,在 `~/.agentmemory/iii-config.yaml` 中设置 `enabled: true`;届时会记录结构化日志与采样的 trace(`sampling_ratio: 0.1`)。已有安装会保留自己的配置文件,升级后如不需要控制台,请手动把其中的 `enabled` 改为 `false`。
 
 如果要改为导出到 Jaeger/Honeycomb/Grafana Tempo,把 `exporter: memory` 改为 `exporter: otlp` 并按 iii 的可观测性文档设置收集器端点。
 

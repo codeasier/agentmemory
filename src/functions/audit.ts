@@ -145,6 +145,19 @@ export async function sweepAuditLog(
   };
 }
 
+export async function drainAuditSweeps(
+  sweep: () => Promise<Awaited<ReturnType<typeof sweepAuditLog>>>,
+): Promise<{ stats: Awaited<ReturnType<typeof sweepAuditLog>>; followUp: boolean }> {
+  let stats: Awaited<ReturnType<typeof sweepAuditLog>>;
+  for (let pass = 0; pass < 4; pass++) {
+    stats = await sweep();
+    if (!stats.more || stats.removed === 0 || stats.failed > 0) {
+      return { stats, followUp: false };
+    }
+  }
+  return { stats: stats!, followUp: true };
+}
+
 export function registerAuditSweepFunction(
   sdk: ISdk,
   kv: StateKV,

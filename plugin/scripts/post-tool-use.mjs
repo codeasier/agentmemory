@@ -72,7 +72,7 @@ async function main() {
 			data: {
 				tool_name: toolName,
 				tool_input: toolInput,
-				tool_output: cleanOutput,
+				tool_output: truncate(cleanOutput, 32e3),
 				...imageData ? { image_data: imageData } : {}
 			}
 		}),
@@ -115,6 +115,14 @@ function extractImageData(output) {
 		imageData: void 0,
 		cleanOutput: output
 	};
+}
+function truncate(value, max) {
+	if (typeof value === "string" && value.length > max) return value.slice(0, max) + "...[truncated]";
+	if (typeof value === "object" && value !== null) {
+		const str = JSON.stringify(value);
+		return str.length > max ? str.slice(0, max) + "...[truncated]" : value;
+	}
+	return value;
 }
 main().catch(() => process.exit(0));
 //#endregion
