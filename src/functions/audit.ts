@@ -1,7 +1,9 @@
+import type { ISdk } from "iii-sdk";
 import type { AuditEntry } from "../types.js";
 import { KV, generateId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
 import { logger } from "../logger.js";
+import { getEnvVar } from "../config.js";
 
 // Audit coverage policy (issue #125).
 //
@@ -30,6 +32,125 @@ import { logger } from "../logger.js";
 //
 // When adding a new deletion path, add an explicit recordAudit call
 // BEFORE kv.delete(...) and match one of the two shapes above.
+//
+// mem::audit-sweep is the one exception: it trims audit rows themselves and
+// reports through logger instead of writing a self-referential audit row.
+
+const DEFAULT_AUDIT_MAX = 5000;
+const DEFAULT_AUDIT_SWEEP_DELETE_BATCH = 2000;
+const DEFAULT_AUDIT_SWEEP_CONCURRENCY = 16;
+export const MAX_AUDIT_QUERY_LIMIT = 1000;
+
+function envCounter(name: string, fallback: number): number {
+  const raw = getEnvVar(name);
+  if (raw === undefined || !/^\d+$/.test(raw.trim())) return fallback;
+  const value = Number(raw.trim());
+  return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+function auditMax(): number {
+  return envCounter("AGENTMEMORY_AUDIT_MAX", DEFAULT_AUDIT_MAX);
+}
+
+function auditTimestamp(entry: AuditEntry): number {
+  const value = Date.parse(entry.timestamp);
+  return Number.isFinite(value) ? value : 0;
+}
+
+async function deleteAuditRows(
+  kv: StateKV,
+  ids: string[],
+  concurrency: number,
+): Promise<number> {
+  let failed = 0;
+  for (let offset = 0; offset < ids.length; offset += concurrency) {
+    const results = await Promise.allSettled(
+      ids
+        .slice(offset, offset + concurrency)
+        .map((id) => kv.delete(KV.audit, id)),
+    );
+    failed += results.filter((result) => result.status === "rejected").length;
+  }
+  return failed;
+}
+
+export async function sweepAuditLog(
+  kv: StateKV,
+): Promise<{
+  scanned: number;
+  removed: number;
+  failed: number;
+  remaining: number;
+  max: number;
+  more: boolean;
+}> {
+  const max = auditMax();
+  const all = await kv.list<AuditEntry>(KV.audit);
+  if (max === 0 || all.length <= max) {
+    return {
+      scanned: all.length,
+      removed: 0,
+      failed: 0,
+      remaining: all.length,
+      max,
+      more: false,
+    };
+  }
+
+  const batchSize = envCounter(
+    "AGENTMEMORY_AUDIT_SWEEP_DELETE_BATCH",
+    DEFAULT_AUDIT_SWEEP_DELETE_BATCH,
+  );
+  const concurrency = Math.max(
+    1,
+    envCounter(
+      "AGENTMEMORY_AUDIT_SWEEP_CONCURRENCY",
+      DEFAULT_AUDIT_SWEEP_CONCURRENCY,
+    ),
+  );
+  const newestFirst = [...all].sort(
+    (a, b) => auditTimestamp(b) - auditTimestamp(a),
+  );
+  const cutoff = newestFirst[max - 1];
+  const targets = cutoff
+    ? newestFirst
+        .filter((entry) => auditTimestamp(entry) < auditTimestamp(cutoff))
+        .slice(0, batchSize)
+    : [];
+  const failed =
+    batchSize === 0
+      ? 0
+      : await deleteAuditRows(
+          kv,
+          targets.map((entry) => entry.id),
+          concurrency,
+        );
+  const removed = targets.length - failed;
+  const remaining = all.length - removed;
+
+  logger.info("audit log sweep complete", {
+    scanned: all.length,
+    removed,
+    failed,
+    remaining,
+    max,
+  });
+  return {
+    scanned: all.length,
+    removed,
+    failed,
+    remaining,
+    max,
+    more: remaining > max || failed > 0,
+  };
+}
+
+export function registerAuditSweepFunction(
+  sdk: ISdk,
+  kv: StateKV,
+): void {
+  sdk.registerFunction("mem::audit-sweep", async () => sweepAuditLog(kv));
+}
 
 export async function recordAudit(
   kv: StateKV,
@@ -109,5 +230,9 @@ export async function queryAudit(
     entries = entries.filter((e) => new Date(e.timestamp).getTime() <= to);
   }
 
-  return entries.slice(0, filter?.limit || 100);
+  const limit = Math.min(
+    Math.max(1, Math.floor(filter?.limit ?? 100)),
+    MAX_AUDIT_QUERY_LIMIT,
+  );
+  return entries.slice(0, limit);
 }
