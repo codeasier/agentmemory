@@ -37,7 +37,7 @@ workers:
           file_path: ./data/stream_store
   - name: iii-observability
     config:
-      enabled: true
+      enabled: false
       service_name: agentmemory
       exporter: memory
       # 0.1 instead of 1.0: at full sampling under sustained load the

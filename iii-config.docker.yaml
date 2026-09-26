@@ -37,7 +37,7 @@ workers:
           file_path: /data/stream_store
   - name: iii-observability
     config:
-      enabled: true
+      enabled: false
       service_name: agentmemory
       exporter: memory
       # See iii-config.yaml for the rationale on 0.1 / console-off (#519).
