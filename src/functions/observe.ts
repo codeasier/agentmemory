@@ -257,14 +257,16 @@ export function registerObserveFunction(
         }>(KV.sessions, payload.sessionId);
 
         if (maxObservationsPerSession && maxObservationsPerSession > 0) {
+          const savedCount = existingSession?.observationCount;
+          const needsRecount = typeof savedCount !== "number" || !Number.isSafeInteger(savedCount) || savedCount <= 0;
           let observationCount =
-            typeof existingSession?.observationCount === "number"
-              ? existingSession.observationCount
-              : (
-                  await kv.list(KV.observations(payload.sessionId))
-                ).length;
+            needsRecount
+              ? (await kv.list(KV.observations(payload.sessionId))).length
+              : savedCount!;
           if (observationCount >= maxObservationsPerSession) {
-            observationCount = (await kv.list(KV.observations(payload.sessionId))).length;
+            if (!needsRecount) {
+              observationCount = (await kv.list(KV.observations(payload.sessionId))).length;
+            }
             if (observationCount >= maxObservationsPerSession) {
               return {
                 success: false,

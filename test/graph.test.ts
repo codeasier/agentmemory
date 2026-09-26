@@ -120,6 +120,26 @@ describe("Graph Functions", () => {
     expect(edges[0].type).toBe("uses");
   });
 
+  it("persists heuristic nodes but reports an LLM failure for retry", async () => {
+    const obs = { ...testObs, concepts: ["sqlite"] };
+    mockProvider.compress.mockRejectedValueOnce(new Error("provider unavailable"));
+
+    const failed = (await sdk.trigger("mem::graph-extract", {
+      observations: [obs],
+    })) as { success: boolean; error?: string };
+    expect(failed).toMatchObject({ success: false, error: "provider unavailable" });
+    expect((await kv.list<GraphNode>("mem:graph:nodes")).some((n) => n.name === "sqlite")).toBe(true);
+
+    const retried = (await sdk.trigger("mem::graph-extract", {
+      observations: [obs],
+    })) as { success: boolean };
+    expect(retried.success).toBe(true);
+    const nodes = await kv.list<GraphNode>("mem:graph:nodes");
+    expect(nodes.filter((n) => n.name === "sqlite")).toHaveLength(1);
+    expect(nodes.some((n) => n.name === "main")).toBe(true);
+    expect(await kv.list<GraphEdge>("mem:graph:edges")).toHaveLength(1);
+  });
+
   it("bounds graph provenance to the freshest ids", async () => {
     const firstIds = Array.from({ length: 80 }, (_, i) => `obs_${i}`);
     const node: GraphNode = {

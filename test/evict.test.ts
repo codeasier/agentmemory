@@ -338,6 +338,23 @@ describe("mem::evict stale sessions", () => {
     expect(save).toHaveBeenCalledTimes(1);
   });
 
+  it("does not rewrite indexes on an idle eviction sweep", async () => {
+    const kv = mockKV(new Map([
+      [KV.sessions, new Map()],
+      [KV.summaries, new Map()],
+      [KV.memories, new Map()],
+      [KV.config, new Map()],
+    ]));
+    const { sdk } = mockSdk();
+    const save = vi.fn(async () => {});
+    setIndexPersistence({ scheduleSave: vi.fn(), save });
+    registerEvictFunction(sdk as never, kv as never);
+
+    await sdk.trigger({ function_id: "mem::evict", payload: {} });
+
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it("leaves the search index untouched during a dry run", async () => {
     const sessionId = "ses_dry_run";
     const session = makeSession(sessionId);

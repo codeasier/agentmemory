@@ -368,7 +368,11 @@ export function registerEvictFunction(sdk: ISdk, kv: StateKV): void {
         }
       }
 
-      if (!dryRun) {
+      if (
+        !dryRun &&
+        stats.lowImportanceObs + stats.capEvictions +
+          stats.expiredMemories + stats.nonLatestMemories > 0
+      ) {
         await flushIndexSave();
       }
 

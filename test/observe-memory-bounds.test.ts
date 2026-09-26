@@ -160,6 +160,30 @@ describe("observe memory bounds", () => {
     expect(listSpy).toHaveBeenCalledWith("mem:obs:ses_legacy");
   });
 
+  it("reconciles a zero counter from an older migrated session before enforcing the cap", async () => {
+    const { registerObserveFunction } = await import("../src/functions/observe.js");
+    const sdk = mockSdk();
+    const kv = mockKV();
+    await kv.set("mem:sessions", "ses_migrated", {
+      id: "ses_migrated",
+      observationCount: 0,
+      status: "completed",
+    });
+    await kv.set("mem:obs:ses_migrated", "old_1", { id: "old_1" });
+    await kv.set("mem:obs:ses_migrated", "old_2", { id: "old_2" });
+    registerObserveFunction(sdk as never, kv as never, undefined, 2);
+
+    const result = await sdk.trigger("mem::observe", {
+      sessionId: "ses_migrated",
+      hookType: "post_tool_use",
+      timestamp: new Date().toISOString(),
+      data: { tool_name: "Read" },
+    });
+
+    expect(result).toMatchObject({ success: false, error: "Session observation limit reached (2)" });
+    expect(await kv.list("mem:obs:ses_migrated")).toHaveLength(2);
+  });
+
   it("bounds tool payloads and the duplicated raw envelope", async () => {
     const { OBSERVE_PAYLOAD_LIMITS, registerObserveFunction } = await import(
       "../src/functions/observe.js"

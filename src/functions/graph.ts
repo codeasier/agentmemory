@@ -765,7 +765,8 @@ export function registerGraphFunction(
           llm: llmEnabled && !llmError,
         });
         return {
-          success: true,
+          success: !llmError,
+          ...(llmError ? { error: llmError } : {}),
           nodesAdded: nodes.length,
           edgesAdded: edges.length,
         };
