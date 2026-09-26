@@ -7,7 +7,7 @@ import type {
   TemporalState,
   MemoryProvider,
 } from "../types.js";
-import { KV, generateId } from "../state/schema.js";
+import { KV, boundProvenance, generateId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
 import { logger } from "../logger.js";
 
@@ -79,7 +79,7 @@ function parseTemporalGraphXml(
       type,
       name,
       properties,
-      sourceObservationIds: observationIds,
+      sourceObservationIds: boundProvenance(observationIds),
       createdAt: now,
       aliases: aliases.length > 0 ? aliases : undefined,
     });
@@ -132,7 +132,7 @@ function parseTemporalGraphXml(
         sourceNodeId: sourceNode.id,
         targetNodeId: targetNode.id,
         weight: Math.max(0, Math.min(1, weight)),
-        sourceObservationIds: observationIds,
+        sourceObservationIds: boundProvenance(observationIds),
         createdAt: now,
         tcommit: now,
         tvalid:
@@ -199,12 +199,10 @@ export function registerTemporalGraphFunctions(
             const oldId = node.id;
             const merged = {
               ...existing,
-              sourceObservationIds: [
-                ...new Set([
-                  ...existing.sourceObservationIds,
-                  ...obsIds,
-                ]),
-              ],
+              sourceObservationIds: boundProvenance([
+                ...existing.sourceObservationIds,
+                ...node.sourceObservationIds,
+              ]),
               properties: { ...existing.properties, ...node.properties },
               updatedAt: new Date().toISOString(),
               aliases: [

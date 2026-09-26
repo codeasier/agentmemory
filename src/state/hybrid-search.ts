@@ -106,7 +106,7 @@ export class HybridSearch {
         ? entityHints
         : extractEntitiesFromQuery(query);
     let graphResults: GraphRetrievalResult[] = [];
-    if (entities.length > 0) {
+    if (this.graphWeight > 0 && entities.length > 0) {
       try {
         graphResults = await this.graphRetrieval.searchByEntities(
           entities,
@@ -119,7 +119,7 @@ export class HybridSearch {
     }
 
     const topVectorObs = vectorResults.slice(0, 5).map((r) => r.obsId);
-    if (topVectorObs.length > 0) {
+    if (this.graphWeight > 0 && topVectorObs.length > 0) {
       try {
         const expansionResults =
           await this.graphRetrieval.expandFromChunks(topVectorObs, 1, 5);
