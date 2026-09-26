@@ -6,6 +6,7 @@ import { isReflectEnabled } from "../functions/slots.js";
 import {
   getAgentId,
   getConsolidationCooldownMs,
+  getGraphExtractionRetryMs,
   isConsolidationEnabled,
   isIncrementalGraphExtractionEnabled,
 } from "../config.js";
@@ -123,7 +124,13 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
         KV.observations(data.sessionId),
       );
       const compressed = observations.filter((o) => o.title);
-      if (compressed.length > 0) {
+      const session = compressed.length > 0
+        ? await kv.get<Session>(KV.sessions, data.sessionId).catch(() => null)
+        : null;
+      if (
+        compressed.length > 0 &&
+        !(session?.graphExtractRetryAt && Date.now() < session.graphExtractRetryAt)
+      ) {
         // /session/end is posted by the per-turn Stop hook, so this handler
         // runs every agent turn. Re-sending the whole session each time makes
         // persistGraphDelta re-merge turns 1..N-1 on turn N — quadratic engine
@@ -138,9 +145,6 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
         // remove one at any point. Whenever the already-extracted half no
         // longer fingerprints the same, we re-send the whole session rather
         // than skip it. Missing a memory is worse than re-merging one.
-        const session = await kv
-          .get<Session>(KV.sessions, data.sessionId)
-          .catch(() => null);
         const at = session?.graphExtractedAt;
         const mark = session?.graphExtractedDigest;
         const incremental = isIncrementalGraphExtractionEnabled();
@@ -170,23 +174,31 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
           }
         }
         if (batch.length > 0) {
-          const result = await sdk.trigger<{ observations: CompressedObservation[] }, { success: boolean; error?: string }>({
-            function_id: "mem::graph-extract",
-            payload: { observations: batch },
-          });
-          if (result?.success !== true) {
-            throw new Error(result?.error ?? "graph extraction did not confirm success");
-          }
-          if (persistWatermark) {
-            const newest = times.reduce((max, time) => Math.max(max, time), 0);
+          try {
+            const result = await sdk.trigger<{ observations: CompressedObservation[] }, { success: boolean; error?: string }>({
+              function_id: "mem::graph-extract",
+              payload: { observations: batch },
+            });
+            if (result?.success !== true) {
+              throw new Error(result?.error ?? "graph extraction did not confirm success");
+            }
+            if (persistWatermark || session?.graphExtractRetryAt) {
+              const newest = times.reduce((max, time) => Math.max(max, time), 0);
+              await kv.update(KV.sessions, data.sessionId, [
+                ...(persistWatermark ? [
+                  { type: "set", path: "graphExtractedAt", value: new Date(newest).toISOString() },
+                  { type: "set", path: "graphExtractedDigest", value: observationFingerprint(compressed) },
+                ] : []),
+                ...(session?.graphExtractRetryAt ? [
+                  { type: "set", path: "graphExtractRetryAt", value: 0 },
+                ] : []),
+              ]);
+            }
+          } catch (err) {
             await kv.update(KV.sessions, data.sessionId, [
-              { type: "set", path: "graphExtractedAt", value: new Date(newest).toISOString() },
-              {
-                type: "set",
-                path: "graphExtractedDigest",
-                value: observationFingerprint(compressed),
-              },
+              { type: "set", path: "graphExtractRetryAt", value: Date.now() + getGraphExtractionRetryMs() },
             ]);
+            throw err;
           }
         }
       }

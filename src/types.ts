@@ -17,6 +17,7 @@ export interface Session {
   // digest is needed. Absent on records written before this existed.
   graphExtractedAt?: string;
   graphExtractedDigest?: string;
+  graphExtractRetryAt?: number;
 }
 
 export interface CommitLink {

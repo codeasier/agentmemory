@@ -381,6 +381,13 @@ export function isIncrementalGraphExtractionEnabled(): boolean {
   return getMergedEnv()["AGENTMEMORY_GRAPH_INCREMENTAL_EXTRACT"] !== "false";
 }
 
+export function getGraphExtractionRetryMs(): number {
+  return parsePositiveIntervalMs(
+    getEnvVar("AGENTMEMORY_GRAPH_EXTRACT_RETRY_MS"),
+    300000,
+  );
+}
+
 export function getGraphBatchSize(): number {
   return safeParseInt(getMergedEnv()["GRAPH_EXTRACTION_BATCH_SIZE"], 10);
 }

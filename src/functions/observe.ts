@@ -18,7 +18,7 @@ function envLimit(name: string, fallback: number): number {
   if (raw === undefined || !/^\d+$/.test(raw.trim())) return fallback;
   const value = Number(raw.trim());
   if (!Number.isSafeInteger(value) || value < 0) return fallback;
-  return value === 0 ? Number.POSITIVE_INFINITY : value;
+  return value === 0 ? Number.POSITIVE_INFINITY : Math.max(2, value);
 }
 
 export const OBSERVE_PAYLOAD_LIMITS = {
@@ -60,7 +60,9 @@ function serializedSize(value: unknown): number {
 
 function boundString(value: string, maxChars: number): string {
   if (JSON.stringify(value).length <= maxChars) return value;
-  const marker = "...[truncated]";
+  const marker = JSON.stringify("...[truncated]").length <= maxChars
+    ? "...[truncated]"
+    : "";
   let low = 0;
   let high = value.length;
   while (low < high) {

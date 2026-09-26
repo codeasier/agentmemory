@@ -82,6 +82,26 @@ describe("observe memory bounds", () => {
     delete process.env.AGENTMEMORY_OBSERVE_TOOL_INPUT_CHARS;
   });
 
+  it.each([1, 3])("keeps tiny configured string budget %i within the serialized limit", async (limit) => {
+    process.env.AGENTMEMORY_OBSERVE_TOOL_INPUT_CHARS = String(limit);
+    const { registerObserveFunction } = await import("../src/functions/observe.js");
+    const sdk = mockSdk();
+    const kv = mockKV();
+    registerObserveFunction(sdk as never, kv as never);
+
+    await sdk.trigger("mem::observe", {
+      sessionId: "ses_tiny",
+      project: "/repo",
+      cwd: "/repo",
+      hookType: "post_tool_use",
+      timestamp: new Date().toISOString(),
+      data: { tool_name: "Read", tool_input: "\\n".repeat(200) },
+    });
+
+    const rawWrite = kv.writes.find((write) => write.scope === "mem:obs:ses_tiny")!.data as RawObservation;
+    expect(JSON.stringify(rawWrite.toolInput).length).toBeLessThanOrEqual(Math.max(2, limit));
+  });
+
   it("reconciles the session counter on reaching the cap", async () => {
     const { registerObserveFunction } = await import("../src/functions/observe.js");
     const sdk = mockSdk();

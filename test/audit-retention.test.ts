@@ -159,11 +159,12 @@ describe("audit log retention", () => {
     await writeN(recordAudit, kv, 250);
 
     expect(await sweepAuditLog(kv as never)).toMatchObject({
-      scanned: 250,
+      scanned: 0,
       removed: 0,
-      remaining: 250,
+      remaining: 0,
       more: false,
     });
+    expect(kv.list).not.toHaveBeenCalled();
     expect(kv.store.get("mem:audit")!.size).toBe(250);
   });
 
@@ -194,6 +195,7 @@ describe("audit log retention", () => {
     await writeN(recordAudit, kv, 1100);
 
     expect(await queryAudit(kv as never, { limit: 5000 })).toHaveLength(1000);
+    expect(await queryAudit(kv as never, { limit: 0 })).toHaveLength(100);
   });
 
   it("drains a bounded number of passes and requests a near-term follow-up", async () => {

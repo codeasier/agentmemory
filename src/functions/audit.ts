@@ -85,8 +85,11 @@ export async function sweepAuditLog(
   more: boolean;
 }> {
   const max = auditMax();
+  if (max === 0) {
+    return { scanned: 0, removed: 0, failed: 0, remaining: 0, max, more: false };
+  }
   const all = await kv.list<AuditEntry>(KV.audit);
-  if (max === 0 || all.length <= max) {
+  if (all.length <= max) {
     return {
       scanned: all.length,
       removed: 0,
@@ -244,7 +247,7 @@ export async function queryAudit(
   }
 
   const limit = Math.min(
-    Math.max(1, Math.floor(filter?.limit ?? 100)),
+    Math.max(1, Math.floor(filter?.limit || 100)),
     MAX_AUDIT_QUERY_LIMIT,
   );
   return entries.slice(0, limit);

@@ -1799,7 +1799,7 @@ export function registerApiTriggers(
       if (authErr) return authErr;
       const parsedLimit = parseOptionalInt(req.query_params?.["limit"]);
       const limit = Math.min(
-        Math.max(1, Math.floor(parsedLimit ?? 50)),
+        Math.max(1, Math.floor(parsedLimit === 0 ? 100 : parsedLimit ?? 50)),
         MAX_AUDIT_QUERY_LIMIT,
       );
       const entries = await sdk.trigger({ function_id: "mem::audit-query", payload: {
