@@ -7,12 +7,109 @@ import { StateKV } from "../state/kv.js";
 import { stripPrivateData } from "./privacy.js";
 import { DedupMap } from "./dedup.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
-import { isAutoCompressEnabled } from "../config.js";
+import { getAgentId, getEnvVar, isAutoCompressEnabled } from "../config.js";
 import { buildSyntheticCompression } from "./compress-synthetic.js";
 import { getSearchIndex, vectorIndexAddGuarded } from "./search.js";
-import { getAgentId } from "../config.js";
 import { logger } from "../logger.js";
 import { saveImageToDisk } from "../utils/image-store.js";
+
+function envLimit(name: string, fallback: number): number {
+  const raw = getEnvVar(name);
+  if (raw === undefined || !/^\d+$/.test(raw.trim())) return fallback;
+  const value = Number(raw.trim());
+  if (!Number.isSafeInteger(value) || value < 0) return fallback;
+  return value === 0 ? Number.POSITIVE_INFINITY : value;
+}
+
+export const OBSERVE_PAYLOAD_LIMITS = {
+  toolInputChars: envLimit("AGENTMEMORY_OBSERVE_TOOL_INPUT_CHARS", 4_000),
+  toolOutputChars: envLimit("AGENTMEMORY_OBSERVE_TOOL_OUTPUT_CHARS", 8_000),
+  userPromptChars: envLimit("AGENTMEMORY_OBSERVE_PROMPT_CHARS", 8_000),
+  rawChars: envLimit("AGENTMEMORY_OBSERVE_RAW_CHARS", 16_000),
+};
+
+function serializedSize(value: unknown): number {
+  if (typeof value === "string") return JSON.stringify(value).length;
+  if (Array.isArray(value)) {
+    return (
+      2 +
+      value.reduce(
+        (total, item, index) =>
+          total + (index > 0 ? 1 : 0) + serializedSize(item),
+        0,
+      )
+    );
+  }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    return (
+      2 +
+      entries.reduce(
+        (total, [key, item], index) =>
+          total +
+          (index > 0 ? 1 : 0) +
+          JSON.stringify(key).length +
+          1 +
+          serializedSize(item),
+        0,
+      )
+    );
+  }
+  return JSON.stringify(value)?.length ?? 0;
+}
+
+function boundString(value: string, maxChars: number): string {
+  if (JSON.stringify(value).length <= maxChars) return value;
+  const marker = "...[truncated]";
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    const candidate = value.slice(0, mid) + marker;
+    if (JSON.stringify(candidate).length <= maxChars) low = mid;
+    else high = mid - 1;
+  }
+  return value.slice(0, low) + marker;
+}
+
+function boundValue(value: unknown, maxChars: number): unknown {
+  if (!Number.isFinite(maxChars) || serializedSize(value) <= maxChars) {
+    return value;
+  }
+  if (typeof value === "string") return boundString(value, maxChars);
+  if (Array.isArray(value)) {
+    const bounded: unknown[] = [];
+    let remaining = Math.max(0, maxChars - 2);
+    for (const item of value) {
+      const comma = bounded.length > 0 ? 1 : 0;
+      if (remaining <= comma) break;
+      const next = boundValue(item, remaining - comma);
+      const cost = comma + serializedSize(next);
+      if (cost > remaining) break;
+      bounded.push(next);
+      remaining -= cost;
+    }
+    return bounded;
+  }
+  if (value !== null && typeof value === "object") {
+    let remaining = Math.max(0, maxChars - 2);
+    const entries: Array<[string, unknown]> = [];
+    for (const [key, item] of Object.entries(
+      value as Record<string, unknown>,
+    ).sort(([, a], [, b]) => serializedSize(a) - serializedSize(b))) {
+      const comma = entries.length > 0 ? 1 : 0;
+      const overhead = comma + JSON.stringify(key).length + 1;
+      if (remaining <= overhead) break;
+      const next = boundValue(item, remaining - overhead);
+      const cost = overhead + serializedSize(next);
+      if (cost > remaining) break;
+      entries.push([key, next]);
+      remaining -= cost;
+    }
+    return Object.fromEntries(entries);
+  }
+  return value;
+}
 
 export function extractImage(d: unknown): string | undefined {
   if (!d) return undefined;
@@ -106,7 +203,7 @@ export function registerObserveFunction(
         sessionId: payload.sessionId,
         timestamp: payload.timestamp,
         hookType: payload.hookType,
-        raw: sanitizedRaw,
+        raw: boundValue(sanitizedRaw, OBSERVE_PAYLOAD_LIMITS.rawChars),
         origin: {
           channel: originChannel,
           capturedAt: payload.timestamp,
@@ -122,12 +219,21 @@ export function registerObserveFunction(
           payload.hookType === "post_tool_failure"
         ) {
           raw.toolName = d["tool_name"] as string | undefined;
-          raw.toolInput = d["tool_input"];
-          raw.toolOutput = d["tool_output"] || d["error"];
+          raw.toolInput = boundValue(
+            d["tool_input"],
+            OBSERVE_PAYLOAD_LIMITS.toolInputChars,
+          );
+          raw.toolOutput = boundValue(
+            d["tool_output"] || d["error"],
+            OBSERVE_PAYLOAD_LIMITS.toolOutputChars,
+          );
           if (raw.origin && raw.toolName) raw.origin.detail = raw.toolName;
         }
         if (payload.hookType === "prompt_submit") {
-          raw.userPrompt = d["prompt"] as string | undefined;
+          raw.userPrompt = boundValue(
+            d["prompt"],
+            OBSERVE_PAYLOAD_LIMITS.userPromptChars,
+          ) as string | undefined;
         }
 
         extractedImage = extractImage(sanitizedRaw);
@@ -144,9 +250,20 @@ export function registerObserveFunction(
       const pendingImageData = extractedImage;
 
       return withKeyedLock(`obs:${payload.sessionId}`, async () => {
+        const existingSession = await kv.get<{
+          agentId?: string;
+          observationCount?: number;
+          firstPrompt?: string;
+        }>(KV.sessions, payload.sessionId);
+
         if (maxObservationsPerSession && maxObservationsPerSession > 0) {
-          const existing = await kv.list(KV.observations(payload.sessionId));
-          if (existing.length >= maxObservationsPerSession) {
+          const observationCount =
+            typeof existingSession?.observationCount === "number"
+              ? existingSession.observationCount
+              : (
+                  await kv.list(KV.observations(payload.sessionId))
+                ).length;
+          if (observationCount >= maxObservationsPerSession) {
             return {
               success: false,
               error: `Session observation limit reached (${maxObservationsPerSession})`,
@@ -158,11 +275,6 @@ export function registerObserveFunction(
         // undefined). Env AGENT_ID only fires when no session row
         // exists yet — otherwise an unscoped session would get
         // retroactively scoped by a later AGENT_ID export.
-        const existingSession = await kv.get<{
-          agentId?: string;
-          observationCount?: number;
-          firstPrompt?: string;
-        }>(KV.sessions, payload.sessionId);
         const inheritedAgentId = existingSession
           ? existingSession.agentId
           : getAgentId();
@@ -223,12 +335,13 @@ export function registerObserveFunction(
         }
 
         await sdk.trigger({
-          function_id: "stream::set",
+          function_id: "stream::send",
           payload: {
-          stream_name: STREAM.name,
-          group_id: STREAM.group(payload.sessionId),
-          item_id: obsId,
-          data: { type: "raw", observation: raw },
+            stream_name: STREAM.name,
+            group_id: STREAM.group(payload.sessionId),
+            id: `raw-${obsId}`,
+            type: "raw_observation",
+            data: { type: "raw", observation: raw },
           },
         });
 
@@ -328,20 +441,22 @@ export function registerObserveFunction(
             { kind: "synthetic", logId: synthetic.id },
           );
           await sdk.trigger({
-            function_id: "stream::set",
+            function_id: "stream::send",
             payload: {
               stream_name: STREAM.name,
               group_id: STREAM.group(payload.sessionId),
-              item_id: obsId,
+              id: `compressed-${synthetic.id}`,
+              type: "compressed_observation",
               data: { type: "compressed", observation: synthetic },
             },
           });
           await sdk.trigger({
-            function_id: "stream::set",
+            function_id: "stream::send",
             payload: {
               stream_name: STREAM.name,
               group_id: STREAM.viewerGroup,
-              item_id: obsId,
+              id: `compressed-${synthetic.id}`,
+              type: "compressed_observation",
               data: {
                 type: "compressed",
                 observation: synthetic,
