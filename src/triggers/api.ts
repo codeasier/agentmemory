@@ -1635,10 +1635,8 @@ export function registerApiTriggers(
                 function_id: "mem::graph-extract",
                 payload: { observations: batch },
               })) as { success?: boolean; nodesAdded?: number; edgesAdded?: number };
-              if (result?.success) {
-                totalNodes += Number(result.nodesAdded) || 0;
-                totalEdges += Number(result.edgesAdded) || 0;
-              }
+              totalNodes += Number(result?.nodesAdded) || 0;
+              totalEdges += Number(result?.edgesAdded) || 0;
               batchesRun++;
             } catch (err) {
               logger.warn("graph-build batch failed", {

@@ -1177,9 +1177,9 @@ iii console --port 3114 \
   <em>Traces: すべてのメモリ操作についてウォーターフォール / フレーム / サービスブレークダウン。</em>
 </p>
 
-**Traces は既にオン:**
+**Traces はデフォルトでオフ:**
 
-`iii-config.yaml` は出荷時から `iii-observability` worker を有効化(`exporter: memory`、`sampling_ratio: 1.0`、メトリクス + ログ)。追加設定不要 — agentmemory が起動した瞬間に、すべてのメモリ操作がトレーススパンとコンソールが読み取れる構造化ログを出します。
+`iii-config.yaml` では `iii-observability` worker は無効です。継続的な収集ではインメモリのトレース、メトリクス、ログの保存領域がエンジンの RSS を大きく増やすためです。iii コンソールが必要な場合は `~/.agentmemory/iii-config.yaml` で `enabled: true` に設定してください。同梱の設定で構造化ログとサンプリングされたトレース(`sampling_ratio: 0.1`)が記録されます。既存のインストールではユーザー設定が保持されるため、アップグレード後にコンソールが不要なら、そこで一度 `enabled: false` に設定してください。
 
 代わりに Jaeger / Honeycomb / Grafana Tempo へエクスポートしたい場合は、`exporter: memory` を `exporter: otlp` に変更し、iii の可観測性ドキュメントに従ってコレクタエンドポイントを設定してください。
 
@@ -1199,7 +1199,7 @@ agentmemory は**それ自体が稼働中の [iii](https://iii.dev) インスタ
 iii worker add iii-pubsub          # メモリ書き込みを接続中のすべてのインスタンスに fan-out
 iii worker add iii-cron            # スケジュール統合、減衰スイープ、スナップショットローテーション
 iii worker add iii-queue           # 埋め込み + 圧縮ジョブの永続リトライ
-iii worker add iii-observability   # すべてのメモリ操作に OTEL トレース(デフォルト オン)
+iii worker add iii-observability   # すべてのメモリ操作に OTEL トレース(デフォルト オフ)
 iii worker add iii-sandbox         # リコールしたコードを隔離 microVM 内で実行
 iii worker add iii-database        # SQL バックエンドのステートアダプタに切り替え
 iii worker add mcp                 # agentmemory MCP の横に汎用 MCP ホストを立てる
@@ -1212,7 +1212,7 @@ iii worker add mcp                 # agentmemory MCP の横に汎用 MCP ホス�
 | [`iii-pubsub`](https://workers.iii.dev/workers/iii-pubsub) | マルチインスタンスメモリ: すべての `remember` が fan-out、すべての `search` が和集合を読む |
 | [`iii-cron`](https://workers.iii.dev/workers/iii-cron) | スケジュールされたライフサイクル — 夜間統合、週次スナップショット、固定クロックでの減衰 |
 | [`iii-queue`](https://workers.iii.dev/workers/iii-queue) | 永続リトライ: 失敗した埋め込み + 圧縮ジョブが再起動を生き延び、観測は失われない |
-| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | すべての function に OTEL トレース、メトリクス、ログ — 初日から `iii-config.yaml` に配線済み |
+| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | すべての function に OTEL トレース、メトリクス、ログ — `iii-config.yaml` に含まれますが、エンジンのメモリを節約するためデフォルトでは無効 |
 | [`iii-sandbox`](https://workers.iii.dev/workers/iii-sandbox) | `memory_recall` から出てきたコードはあなたのシェルではなく使い捨て VM 内で実行 |
 | [`iii-database`](https://workers.iii.dev/workers/iii-database) | デフォルトのインメモリ KV では足りないときの SQL バックエンドのステートアダプタ |
 | [`mcp`](https://workers.iii.dev/workers/mcp) | agentmemory の隣に追加の MCP サーバーを立て、同じエンジンを共有 |

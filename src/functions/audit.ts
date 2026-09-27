@@ -115,10 +115,10 @@ export async function sweepAuditLog(
     (a, b) => auditTimestamp(b) - auditTimestamp(a),
   );
   const cutoff = newestFirst[max - 1];
-  const targets = cutoff
+  const targets = cutoff && batchSize > 0
     ? newestFirst
         .filter((entry) => auditTimestamp(entry) < auditTimestamp(cutoff))
-        .slice(0, batchSize)
+        .slice(-batchSize)
     : [];
   const failed =
     batchSize === 0

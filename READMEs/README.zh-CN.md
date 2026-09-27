@@ -1387,11 +1387,11 @@ AGENTMEMORY_ALLOW_AGENT_SDK=true
 AGENTMEMORY_AUTO_COMPRESS=true
 ```
 
-如果想开启图或整合特性,在同一文件中打开:
+配置 LLM provider 后,整合默认开启;如需关闭,设置 `CONSOLIDATION_ENABLED=false`。图谱提取需要单独开启:
 
 ```env
 GRAPH_EXTRACTION_ENABLED=true
-CONSOLIDATION_ENABLED=true
+# CONSOLIDATION_ENABLED=false   # 关闭自动整合
 ```
 
 ### 环境变量

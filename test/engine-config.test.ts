@@ -7,7 +7,14 @@ function shippedConfig(file: string): string {
 }
 
 describe("bundled iii engine config", () => {
-  it.each(["iii-config.yaml", "iii-config.docker.yaml"])(
+  it.each([
+    "iii-config.yaml",
+    "iii-config.docker.yaml",
+    "deploy/fly/entrypoint.sh",
+    "deploy/render/entrypoint.sh",
+    "deploy/railway/entrypoint.sh",
+    "deploy/coolify/entrypoint.sh",
+  ])(
     "keeps the in-memory observability store disabled in %s",
     (file) => {
       const observability = shippedConfig(file)
@@ -16,6 +23,8 @@ describe("bundled iii engine config", () => {
 
       expect(observability).toBeDefined();
       expect(observability).toMatch(/enabled:\s*false/);
+      expect(observability).toMatch(/sampling_ratio:\s*0\.1/);
+      expect(observability).toMatch(/logs_console_output:\s*false/);
     },
   );
 });

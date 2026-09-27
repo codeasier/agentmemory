@@ -1156,9 +1156,9 @@ iii console --port 3114 \
   <em>Traces: 모든 메모리 작업에 대한 워터폴 / 플레임 / 서비스 분해.</em>
 </p>
 
-**Traces는 이미 켜져 있습니다:**
+**Traces는 기본적으로 꺼져 있습니다:**
 
-`iii-config.yaml`은 `iii-observability` 워커가 활성화된 상태로 제공됩니다(`exporter: memory`, `sampling_ratio: 1.0`, metrics + logs). 추가 설정이 필요 없습니다. agentmemory가 시작되는 순간 모든 메모리 작업이 콘솔이 읽을 수 있는 trace span과 구조화된 로그를 방출합니다.
+`iii-config.yaml`에서는 `iii-observability` 워커가 비활성화되어 있습니다. 지속적으로 수집할 때 인메모리 trace, metric, log 저장소가 엔진의 RSS를 크게 늘리기 때문입니다. iii 콘솔이 필요하면 `~/.agentmemory/iii-config.yaml`에서 `enabled: true`로 설정하십시오. 그러면 제공되는 설정이 구조화된 로그와 샘플링된 traces(`sampling_ratio: 0.1`)를 기록합니다. 기존 설치는 사용자 설정을 유지하므로 업그레이드 후 콘솔이 필요 없다면 해당 파일에서 `enabled: false`로 한 번 설정하십시오.
 
 대신 Jaeger/Honeycomb/Grafana Tempo로 내보내고 싶다면 `exporter: memory`를 `exporter: otlp`로 변경하고 iii의 가시성 문서에 따라 collector 엔드포인트를 설정하십시오.
 
@@ -1178,7 +1178,7 @@ agentmemory는 **이미 실행 중인 [iii](https://iii.dev) 인스턴스**입�
 iii worker add iii-pubsub          # fan memory writes out to every connected instance
 iii worker add iii-cron            # scheduled consolidation, decay sweeps, snapshot rotation
 iii worker add iii-queue           # durable retries for embedding + compression jobs
-iii worker add iii-observability   # OTEL traces on every memory op (default on)
+iii worker add iii-observability   # OTEL traces on every memory op (off by default)
 iii worker add iii-sandbox         # run recalled code inside an isolated microVM
 iii worker add iii-database        # swap in a SQL-backed state adapter
 iii worker add mcp                 # generic MCP host alongside the agentmemory MCP
@@ -1191,7 +1191,7 @@ iii worker add mcp                 # generic MCP host alongside the agentmemory 
 | [`iii-pubsub`](https://workers.iii.dev/workers/iii-pubsub) | 멀티 인스턴스 메모리: 모든 `remember`가 팬아웃, 모든 `search`가 합집합을 읽음 |
 | [`iii-cron`](https://workers.iii.dev/workers/iii-cron) | 스케줄링된 라이프사이클: 야간 통합, 주간 스냅샷, 고정된 시계에 따른 감쇠 |
 | [`iii-queue`](https://workers.iii.dev/workers/iii-queue) | 내구성 있는 재시도: 실패한 임베딩 + 압축 작업은 재시작에도 살아남아 관측 손실 없음 |
-| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | 모든 함수에 OTEL traces, metrics, logs, 첫날부터 `iii-config.yaml`에 연결됨 |
+| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | 모든 함수에 OTEL traces, metrics, logs; `iii-config.yaml`에 포함되지만 엔진 메모리를 절약하기 위해 기본적으로 비활성화됨 |
 | [`iii-sandbox`](https://workers.iii.dev/workers/iii-sandbox) | `memory_recall`에서 나온 코드를 셸이 아니라 일회용 VM 안에서 실행 |
 | [`iii-database`](https://workers.iii.dev/workers/iii-database) | 인메모리 KV 기본값을 넘어설 때 SQL 기반 state adapter |
 | [`mcp`](https://workers.iii.dev/workers/mcp) | agentmemory의 MCP 옆에 추가 MCP 서버를 세우고 동일한 엔진을 공유 |

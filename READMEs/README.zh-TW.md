@@ -1173,9 +1173,9 @@ iii console --port 3114 \
   <em>Traces:每個記憶操作的瀑布/火焰/服務分解。</em>
 </p>
 
-**Traces 已開啟:**
+**Traces 預設關閉:**
 
-`iii-config.yaml` 出廠啟用 `iii-observability` worker(`exporter: memory`、`sampling_ratio: 1.0`、指標 + 日誌)。無需額外設定;agentmemory 啟動那一刻,每個記憶操作都會發出一個 trace span 和一個主控台可讀的結構化日誌。
+`iii-config.yaml` 預設停用 `iii-observability` worker,因為其記憶體內的 trace、指標和日誌儲存會在持續擷取時顯著增加引擎 RSS。需要使用 iii 主控台時,請在 `~/.agentmemory/iii-config.yaml` 中設定 `enabled: true`;屆時內建設定會記錄結構化日誌與採樣的 trace(`sampling_ratio: 0.1`)。既有安裝會保留使用者設定,升級後若不需要主控台,請在其中將 `enabled` 設為 `false` 一次。
 
 若你想改為匯出到 Jaeger/Honeycomb/Grafana Tempo,把 `exporter: memory` 改為 `exporter: otlp` 並依 iii 的可觀測性文件設定收集器端點。
 
@@ -1195,7 +1195,7 @@ agentmemory **本身就是一個執行中的 [iii](https://iii.dev) 實例**。�
 iii worker add iii-pubsub          # 把記憶寫入扇出到每個連接的實例
 iii worker add iii-cron            # 排程整合、衰減掃描、快照輪替
 iii worker add iii-queue           # 嵌入 + 壓縮工作的持久重試
-iii worker add iii-observability   # 每個記憶操作的 OTEL traces(預設開啟)
+iii worker add iii-observability   # 每個記憶操作的 OTEL traces(預設關閉)
 iii worker add iii-sandbox         # 在隔離 microVM 內執行召回到的程式碼
 iii worker add iii-database        # 切換 SQL 後端的狀態適配器
 iii worker add mcp                 # 在 agentmemory 的 MCP 旁開設通用 MCP 宿主
@@ -1208,7 +1208,7 @@ iii worker add mcp                 # 在 agentmemory 的 MCP 旁開設通用 MCP
 | [`iii-pubsub`](https://workers.iii.dev/workers/iii-pubsub) | 多實例記憶:每次 `remember` 扇出,每次 `search` 讀取聯集 |
 | [`iii-cron`](https://workers.iii.dev/workers/iii-cron) | 排程生命週期:夜間整合、週快照、按固定時鐘衰減 |
 | [`iii-queue`](https://workers.iii.dev/workers/iii-queue) | 持久重試:失敗的嵌入 + 壓縮工作在重啟後存活,無觀測遺失 |
-| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | 每個函式的 OTEL traces、指標、日誌,從第一天起就接入 `iii-config.yaml` |
+| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | 每個函式的 OTEL traces、指標、日誌;`iii-config.yaml` 內預設關閉以節省引擎記憶體 |
 | [`iii-sandbox`](https://workers.iii.dev/workers/iii-sandbox) | `memory_recall` 出來的程式碼在一次性 VM 中執行,不在你的 shell 中 |
 | [`iii-database`](https://workers.iii.dev/workers/iii-database) | 當預設的記憶體 KV 不夠用時,SQL 後端狀態適配器 |
 | [`mcp`](https://workers.iii.dev/workers/mcp) | 在 agentmemory 的旁邊架設額外 MCP 伺服器,共享同一引擎 |

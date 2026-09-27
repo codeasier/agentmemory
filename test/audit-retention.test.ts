@@ -98,6 +98,9 @@ describe("audit log retention", () => {
       more: true,
     });
     expect(kv.store.get("mem:audit")!.size).toBe(200);
+    expect(kv.store.get("mem:audit")!.has("aud_0000")).toBe(false);
+    expect(kv.store.get("mem:audit")!.has("aud_0099")).toBe(false);
+    expect(kv.store.get("mem:audit")!.has("aud_0100")).toBe(true);
 
     const second = await sweepAuditLog(kv as never);
     expect(second).toMatchObject({ removed: 100, remaining: 100, more: true });
@@ -166,6 +169,21 @@ describe("audit log retention", () => {
     });
     expect(kv.list).not.toHaveBeenCalled();
     expect(kv.store.get("mem:audit")!.size).toBe(250);
+  });
+
+  it("does not select any rows when the delete batch is zero", async () => {
+    process.env.AGENTMEMORY_AUDIT_MAX = "10";
+    process.env.AGENTMEMORY_AUDIT_SWEEP_DELETE_BATCH = "0";
+    const { sweepAuditLog } = await import("../src/functions/audit.js");
+    const kv = mockKV();
+    await seedAudit(kv, 30);
+
+    expect(await sweepAuditLog(kv as never)).toMatchObject({
+      removed: 0,
+      remaining: 30,
+      more: true,
+    });
+    expect(kv.store.get("mem:audit")!.size).toBe(30);
   });
 
   it("retains rows whose delete fails for a later sweep", async () => {

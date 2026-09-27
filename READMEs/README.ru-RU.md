@@ -1174,9 +1174,9 @@ iii console --port 3114 \
   <em>Traces: waterfall / flame / разбивка по сервисам для каждой операции памяти.</em>
 </p>
 
-**Traces уже включены:**
+**Traces по умолчанию выключены:**
 
-`iii-config.yaml` поставляется с включённым воркером `iii-observability` (`exporter: memory`, `sampling_ratio: 1.0`, метрики + логи). Дополнительная настройка не нужна — как только agentmemory запускается, каждая операция памяти эмитит trace-span и структурированный лог, который консоль читает.
+В `iii-config.yaml` воркер `iii-observability` отключён: при длительном сборе его хранилища трейсов, метрик и логов в памяти заметно увеличивают RSS движка. Если нужна iii console, задайте `enabled: true` в `~/.agentmemory/iii-config.yaml`; тогда штатная конфигурация будет записывать структурированные логи и трейсы с выборкой (`sampling_ratio: 0.1`). Существующие установки сохраняют пользовательскую конфигурацию, поэтому при обновлении один раз задайте там `enabled: false`, если консоль не нужна.
 
 Если хотите экспортировать в Jaeger/Honeycomb/Grafana Tempo, измените `exporter: memory` на `exporter: otlp` и укажите эндпоинт коллектора согласно документации по observability в iii.
 
@@ -1196,7 +1196,7 @@ agentmemory — это **уже работающий инстанс [iii](https:
 iii worker add iii-pubsub          # fan memory writes out to every connected instance
 iii worker add iii-cron            # scheduled consolidation, decay sweeps, snapshot rotation
 iii worker add iii-queue           # durable retries for embedding + compression jobs
-iii worker add iii-observability   # OTEL traces on every memory op (default on)
+iii worker add iii-observability   # OTEL traces on every memory op (off by default)
 iii worker add iii-sandbox         # run recalled code inside an isolated microVM
 iii worker add iii-database        # swap in a SQL-backed state adapter
 iii worker add mcp                 # generic MCP host alongside the agentmemory MCP
@@ -1209,7 +1209,7 @@ iii worker add mcp                 # generic MCP host alongside the agentmemory 
 | [`iii-pubsub`](https://workers.iii.dev/workers/iii-pubsub) | Память на множестве инстансов: каждое `remember` разлетается, каждое `search` читает объединение |
 | [`iii-cron`](https://workers.iii.dev/workers/iii-cron) | Жизненный цикл по расписанию — ночная консолидация, еженедельные снапшоты, decay по фиксированному таймеру |
 | [`iii-queue`](https://workers.iii.dev/workers/iii-queue) | Надёжные повторы: упавшие job'ы эмбеддинга и компрессии переживают перезапуск, наблюдения не теряются |
-| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | OTEL-трейсы, метрики, логи на каждой функции — подключены в `iii-config.yaml` с первого дня |
+| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | OTEL-трейсы, метрики, логи на каждой функции — присутствуют в `iii-config.yaml`, но по умолчанию отключены для экономии памяти движка |
 | [`iii-sandbox`](https://workers.iii.dev/workers/iii-sandbox) | Код, пришедший из `memory_recall`, исполняется внутри одноразовой VM, а не в вашем shell |
 | [`iii-database`](https://workers.iii.dev/workers/iii-database) | SQL-адаптер состояния, когда дефолтная in-memory KV уже мала |
 | [`mcp`](https://workers.iii.dev/workers/mcp) | Поднять дополнительные MCP-серверы рядом с MCP'ом agentmemory, на одном и том же движке |
