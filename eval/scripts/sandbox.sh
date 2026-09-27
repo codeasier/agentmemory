@@ -75,10 +75,10 @@ workers:
           file_path: $SANDBOX_ROOT/data/stream_store
   - name: iii-observability
     config:
-      enabled: true
+      enabled: false
       service_name: agentmemory-eval
       exporter: memory
-      sampling_ratio: 1.0
+      sampling_ratio: 0.1
       metrics_enabled: true
       logs_enabled: false
       logs_console_output: false

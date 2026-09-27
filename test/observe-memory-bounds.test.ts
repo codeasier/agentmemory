@@ -204,6 +204,48 @@ describe("observe memory bounds", () => {
     expect(await kv.list("mem:obs:ses_migrated")).toHaveLength(2);
   });
 
+  it("retains the recounted observations when creating a missing session", async () => {
+    const { registerObserveFunction } = await import("../src/functions/observe.js");
+    const sdk = mockSdk();
+    const kv = mockKV();
+    await kv.set("mem:obs:ses_missing", "old_1", { id: "old_1" });
+    await kv.set("mem:obs:ses_missing", "old_2", { id: "old_2" });
+    registerObserveFunction(sdk as never, kv as never, undefined, 3);
+
+    const payload = {
+      sessionId: "ses_missing",
+      project: "/repo",
+      cwd: "/repo",
+      hookType: "post_tool_use",
+      timestamp: new Date().toISOString(),
+      data: { tool_name: "Read" },
+    };
+    expect(await sdk.trigger("mem::observe", payload)).toMatchObject({ observationId: expect.any(String) });
+    expect((await kv.get<{ observationCount: number }>("mem:sessions", "ses_missing"))?.observationCount).toBe(3);
+    expect(await sdk.trigger("mem::observe", payload)).toMatchObject({
+      success: false,
+      error: "Session observation limit reached (3)",
+    });
+  });
+
+  it("counts surviving observations on implicit create when the cap is disabled", async () => {
+    const { registerObserveFunction } = await import("../src/functions/observe.js");
+    const sdk = mockSdk();
+    const kv = mockKV();
+    await kv.set("mem:obs:ses_uncapped", "old_1", { id: "old_1" });
+    registerObserveFunction(sdk as never, kv as never, undefined, 0);
+
+    await sdk.trigger("mem::observe", {
+      sessionId: "ses_uncapped",
+      project: "/repo",
+      cwd: "/repo",
+      hookType: "post_tool_use",
+      timestamp: new Date().toISOString(),
+      data: { tool_name: "Read" },
+    });
+    expect((await kv.get<{ observationCount: number }>("mem:sessions", "ses_uncapped"))?.observationCount).toBe(2);
+  });
+
   it("bounds tool payloads and the duplicated raw envelope", async () => {
     const { OBSERVE_PAYLOAD_LIMITS, registerObserveFunction } = await import(
       "../src/functions/observe.js"

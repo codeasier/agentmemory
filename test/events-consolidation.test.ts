@@ -10,6 +10,7 @@ vi.mock("../src/config.js", () => ({
   isConsolidationEnabled: vi.fn(() => true),
   isGraphExtractionEnabled: vi.fn(() => false),
   getConsolidationCooldownMs: vi.fn(() => 300000),
+  getGraphExtractionRetryMs: vi.fn(() => 300000),
   isIncrementalGraphExtractionEnabled: vi.fn(() => true),
 }));
 
@@ -112,6 +113,35 @@ describe("event::session::stopped consolidation fan-out", () => {
     expect((crystallizeCall![0] as { payload: unknown }).payload).toEqual({
       olderThanDays: 0,
     });
+  });
+
+  it("waits for keyless graph extraction before fanning out reflection", async () => {
+    const kv = mockKV();
+    kv.list.mockResolvedValue([{
+      id: "obs_1",
+      title: "memory",
+      timestamp: "2026-01-01T00:00:00Z",
+    }] as never);
+    const { sdk, handlers } = mockSdk();
+    const originalTrigger = sdk.trigger;
+    let resolveGraph!: (result: { success: boolean }) => void;
+    const graphResult = new Promise<{ success: boolean }>((resolve) => { resolveGraph = resolve; });
+    const calls: string[] = [];
+    sdk.trigger = vi.fn(async (input) => {
+      calls.push(input.function_id);
+      if (input.function_id === "mem::graph-extract") return graphResult;
+      return originalTrigger(input);
+    });
+    registerEventTriggers(sdk as never, kv as never);
+
+    const stopped = handlers.get("event::session::stopped")!({ sessionId: "ses_1" });
+    await vi.waitFor(() => expect(calls).toContain("mem::graph-extract"));
+    expect(calls).not.toContain("mem::consolidate-pipeline");
+    expect(calls).not.toContain("mem::auto-crystallize");
+    resolveGraph({ success: true });
+    await stopped;
+    expect(calls).toContain("mem::consolidate-pipeline");
+    expect(calls).toContain("mem::auto-crystallize");
   });
 
   it("skips consolidate-pipeline and auto-crystallize when consolidation disabled but still summarizes", async () => {

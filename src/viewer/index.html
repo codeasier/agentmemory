@@ -3926,8 +3926,9 @@
       if (evt.event_type && evt.event_type !== 'observation' && evt.event_type !== 'create' && evt.event_type !== 'update') {
         return;
       }
-      if (evt.type === 'event' && evt.data) {
-        observation = evt.data.observation || evt.data;
+      if (evt.type === 'event' && evt.event &&
+          (evt.event.type === 'raw_observation' || evt.event.type === 'compressed_observation')) {
+        observation = evt.event.data && evt.event.data.observation;
         if (looksLikeObservation(observation)) {
           routeWsMessage({ observation: observation });
         }

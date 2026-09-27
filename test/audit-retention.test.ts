@@ -116,6 +116,28 @@ describe("audit log retention", () => {
     expect(kept.has("t0")).toBe(false);
   });
 
+  it("caps configured delete concurrency even with a large batch", async () => {
+    process.env.AGENTMEMORY_AUDIT_MAX = "1";
+    process.env.AGENTMEMORY_AUDIT_SWEEP_CONCURRENCY = "100000";
+    const { sweepAuditLog } = await import("../src/functions/audit.js");
+    const kv = mockKV();
+    await seedAudit(kv, 300);
+    let active = 0;
+    let peak = 0;
+    const originalDelete = kv.delete;
+    kv.delete = async (scope: string, key: string) => {
+      active++;
+      peak = Math.max(peak, active);
+      await Promise.resolve();
+      await originalDelete(scope, key);
+      active--;
+    };
+
+    expect((await sweepAuditLog(kv as never)).removed).toBe(299);
+    expect(peak).toBeLessThanOrEqual(256);
+    expect(peak).toBeGreaterThan(1);
+  });
+
   it("keeps rows that share the newest retained timestamp", async () => {
     process.env.AGENTMEMORY_AUDIT_MAX = "10";
     const { recordAudit, sweepAuditLog } = await import(

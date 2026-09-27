@@ -14,6 +14,7 @@ describe("bundled iii engine config", () => {
     "deploy/render/entrypoint.sh",
     "deploy/railway/entrypoint.sh",
     "deploy/coolify/entrypoint.sh",
+    "eval/scripts/sandbox.sh",
   ])(
     "keeps the in-memory observability store disabled in %s",
     (file) => {

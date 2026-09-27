@@ -342,8 +342,8 @@ export const V040_TOOLS: McpToolDef[] = [
         operation: { type: "string", description: "Filter by operation type" },
         limit: {
           type: "number",
-          description: "Max entries (default 50)",
-          minimum: 1,
+          description: "Max entries (default 50; 0 uses the historical 100-row default)",
+          minimum: 0,
           maximum: 1000,
         },
       },

@@ -104,11 +104,14 @@ export async function sweepAuditLog(
     "AGENTMEMORY_AUDIT_SWEEP_DELETE_BATCH",
     DEFAULT_AUDIT_SWEEP_DELETE_BATCH,
   );
-  const concurrency = Math.max(
-    1,
-    envCounter(
-      "AGENTMEMORY_AUDIT_SWEEP_CONCURRENCY",
-      DEFAULT_AUDIT_SWEEP_CONCURRENCY,
+  const concurrency = Math.min(
+    256,
+    Math.max(
+      1,
+      envCounter(
+        "AGENTMEMORY_AUDIT_SWEEP_CONCURRENCY",
+        DEFAULT_AUDIT_SWEEP_CONCURRENCY,
+      ),
     ),
   );
   const newestFirst = [...all].sort(

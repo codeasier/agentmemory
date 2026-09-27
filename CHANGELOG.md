@@ -16,12 +16,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Index saves are serialised instead of interleaved.** Concurrent save callers collapse into one running save plus one queued save rather than several writers racing on the same shards.
 - **Eviction removes observations from BM25 and vector search.** Deleted observations no longer remain as in-memory postings that are re-serialized on every index save; dry runs leave the index untouched.
 - **Repeated session stop no longer re-extracts the entire graph.** Per-turn graph extraction normally dispatches only the observations added since the last pass. An observation-id fingerprint detects late compression and eviction, mixed-precision timestamps compare by epoch time, and an invalid watermark falls back to a full extraction rather than skipping data. Failed extraction (including partial LLM failure) leaves the watermark intact and retries the full outstanding batch after a per-session cooldown (`AGENTMEMORY_GRAPH_EXTRACT_RETRY_MS`, default 5 minutes), rather than re-merging heuristics on every turn.
+- **Consolidation waits for graph extraction on session stop.** Reflection reads the graph, so its fire-and-forget fan-out starts after extraction; a slow LLM provider can delay this fan-out by its graph-extraction timeout, though the client Stop hook does not wait for it.
 - **Bundled engine configs disable the in-memory observability store by default.** Existing user-owned `iii-config.yaml` files are not rewritten; operators who do not use the iii console should set `iii-observability.enabled: false` once on upgrading.
 
 ### Added
 
 - **Scheduled eviction is available but opt-in.** `AGENTMEMORY_EVICTION_ENABLED=true` runs `mem::evict` on a timer (24 h by default) instead of requiring a manual REST call.
-- **A committed `bench:memory-retention` harness records the before/after evidence.** Two identical 2,000-observation cycles against upstream main measured 82.5% less second-cycle RSS growth and 70.9% less persisted data on the fix branch, at a 15.7–27.2% synthetic load-throughput cost. The recorded baseline predates this branch's rebase onto `v0.9.29`, so it is not a `v0.9.29` comparison; see the result file. The iii `file_based` allocator baseline remains and is not eliminated by this change.
+- **A `bench:memory-retention` harness and historical results are available.** The committed run compares an earlier fork against upstream main `39658a9` on iii 0.22.1; it predates the rebase onto `v0.9.29` (iii 0.11.2) and does not measure this PR's improvement or throughput cost against its base. A matched run against the pinned engine is still needed. The iii `file_based` allocator baseline remains and is not eliminated by this change.
 
 ## [0.9.29] — 2026-08-16
 

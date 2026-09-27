@@ -257,11 +257,12 @@ export function registerObserveFunction(
           observationCount?: number;
           firstPrompt?: string;
         }>(KV.sessions, payload.sessionId);
+        let observationCount = 0;
 
         if (maxObservationsPerSession && maxObservationsPerSession > 0) {
           const savedCount = existingSession?.observationCount;
           const needsRecount = typeof savedCount !== "number" || !Number.isSafeInteger(savedCount) || savedCount <= 0;
-          let observationCount =
+          observationCount =
             needsRecount
               ? (await kv.list(KV.observations(payload.sessionId))).length
               : savedCount!;
@@ -412,7 +413,9 @@ export function registerObserveFunction(
             startedAt: payload.timestamp ?? ts,
             updatedAt: ts,
             status: "active",
-            observationCount: 1,
+            observationCount: maxObservationsPerSession && maxObservationsPerSession > 0
+              ? observationCount + 1
+              : (await kv.list(KV.observations(payload.sessionId))).length,
             ...(inheritedAgentId ? { agentId: inheritedAgentId } : {}),
             ...(trimmedPrompt && trimmedPrompt.length > 0
               ? { firstPrompt: trimmedPrompt }

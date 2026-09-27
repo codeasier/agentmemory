@@ -1505,7 +1505,7 @@ CONSOLIDATION_ENABLED=true
                                    # model to skip its hidden thinking pass
                                    # during graph extraction. Faster runs;
                                    # relation quality can drop slightly.
-# CONSOLIDATION_ENABLED=true
+# CONSOLIDATION_ENABLED=false   # on by default when an LLM provider is configured
 # LESSON_DECAY_ENABLED=true
 # OBSIDIAN_AUTO_EXPORT=false
 # AGENTMEMORY_EXPORT_ROOT=~/.agentmemory

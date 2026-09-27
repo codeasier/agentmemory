@@ -176,7 +176,7 @@ function validate(toolName: string, args: Record<string, unknown>): Validated {
     case "memory_export":
       return v;
     case "memory_audit": {
-      v.limit = parseLimit(args["limit"], 50);
+      v.limit = args["limit"] === 0 ? 100 : parseLimit(args["limit"], 50);
       return v;
     }
     default:

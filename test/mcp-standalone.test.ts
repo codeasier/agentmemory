@@ -381,6 +381,18 @@ describe("handleToolCall", () => {
     expect(JSON.parse(huge.content[0].text).results).toHaveLength(100);
   });
 
+  it("memory_audit keeps the historical 100-row limit for explicit zero", async () => {
+    const kv = new InMemoryKV();
+    for (let i = 0; i < 120; i++) {
+      await kv.set("mem:audit", `aud_${i}`, { id: `aud_${i}` });
+    }
+
+    const zero = await handleToolCall("memory_audit", { limit: 0 }, kv);
+    const omitted = await handleToolCall("memory_audit", {}, kv);
+    expect(JSON.parse(zero.content[0].text).entries).toHaveLength(100);
+    expect(JSON.parse(omitted.content[0].text).entries).toHaveLength(50);
+  });
+
   it("memory_governance_delete removes memories by id array (#139)", async () => {
     const kv = new InMemoryKV();
     const a = JSON.parse(

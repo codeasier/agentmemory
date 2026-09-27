@@ -51,6 +51,7 @@ async function main() {
       data: {
         tool_name: toolName,
         tool_input: toolInput,
+        // The larger ingress cap lets the server preserve structured output within its 8k default.
         tool_output: truncate(cleanOutput, 32000),
         ...(imageData ? { image_data: imageData } : {}),
       },

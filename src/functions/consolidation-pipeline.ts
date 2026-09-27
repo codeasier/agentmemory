@@ -108,7 +108,7 @@ export function registerConsolidationPipelineFunction(
                   fact,
                   confidence,
                   sourceSessionIds: boundProvenance(
-                    recentSummaries.map((s) => s.sessionId),
+                    recentSummaries.map((s) => s.sessionId).reverse(),
                   ),
                   sourceMemoryIds: [],
                   accessCount: 1,

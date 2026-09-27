@@ -43,12 +43,12 @@ function buildPanels(restEndpoints: number): Record<
     console: {
       title: "iii console · first-class",
       blurb:
-        "agentmemory runs on the iii engine, so the official iii console gives engine-level visibility: every function call, every worker, every queue, every trace. From v0.9.16 the agentmemory CLI prompts to install iii console alongside the engine. Launch on :3114 so the viewer keeps :3113.",
+        "agentmemory runs on the iii engine, so the official iii console gives engine-level visibility into functions, workers, and queues. Traces are available when you enable iii-observability. From v0.9.16 the agentmemory CLI prompts to install iii console alongside the engine. Launch on :3114 so the viewer keeps :3113.",
       bullets: [
         "REGISTERED FUNCTIONS · INVOKE ANY DIRECTLY WITH JSON",
         `${restEndpoints} HTTP ENDPOINTS · REPLAY ANY REST CALL`,
         "WEBSOCKET STREAM MONITOR · WATCH FRAMES LIVE",
-        "OTEL EXPORTER = MEMORY (DEFAULT) · TRACES STAY LOCAL",
+        "OTEL EXPORTER = MEMORY (WHEN ENABLED) · TRACES STAY LOCAL",
         "NO AUTH · BIND TO 127.0.0.1 ONLY",
       ],
       img: "/dashboard.png",
@@ -70,9 +70,9 @@ function buildPanels(restEndpoints: number): Record<
       launch: "open http://localhost:3114/states",
     },
     traces: {
-      title: "OpenTelemetry out of the box",
+      title: "OpenTelemetry when enabled",
       blurb:
-        "iii-observability ships with exporter: memory, sampling_ratio: 1.0. Every memory operation emits a trace span + structured log. Swap to OTLP for any external tracing backend.",
+        "iii-observability is off by default to save engine memory. Enable it in ~/.agentmemory/iii-config.yaml for structured logs and sampled traces (sampling_ratio: 0.1); exporter: memory keeps them local. Swap to OTLP for an external tracing backend.",
       bullets: [
         "WATERFALL · FLAME · SERVICE BREAKDOWN · TRACE MAP",
         "FILTER BY TRACE ID · SERVICE · DURATION",
@@ -103,7 +103,7 @@ export function CommandCenter({ restEndpoints }: { restEndpoints: number }) {
         </h2>
         <p className="section-lede">
           agentmemory ships a real-time viewer for your memories and an
-          engine-level console for every function, trigger, and OTel span.
+          engine-level console for functions and triggers, with optional OTel traces.
           Both are first-class, installed inline by the CLI on first run.
         </p>
       </header>
