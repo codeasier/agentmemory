@@ -18,6 +18,20 @@ const INDEX_SHARD_KEY = "data";
 const DEFAULT_INDEX_SHARD_CHARS = 2_000_000;
 const DEFAULT_BOOT_RECLAIM_MAX_DELETES = 200;
 
+// mem:audit exists to record structural deletions of user data — that is
+// the policy stated at the top of src/functions/audit.ts. Index shard
+// writes and manifest publishes remove no user rows, so they fall outside
+// it, yet a single save() emits three of them: on a real store they
+// reached 59876 of 84028 entries (71%), which is what makes the audit log
+// slow to query and bloats startup. Off by default; set
+// AGENTMEMORY_AUDIT_INDEX_PERSIST=1 when debugging index persistence.
+function auditIndexPersistEnabled(): boolean {
+  const raw = process.env.AGENTMEMORY_AUDIT_INDEX_PERSIST;
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === "1" || normalized === "true";
+}
+
 type IndexShardManifest = {
   v: 1;
   generation?: string;
@@ -608,6 +622,7 @@ export class IndexPersistence {
     targetIds: string[],
     details: Record<string, unknown>,
   ): Promise<void> {
+    if (!auditIndexPersistEnabled()) return;
     await safeAudit(
       this.kv,
       "index_persist",
