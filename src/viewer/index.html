@@ -1755,7 +1755,7 @@
       html += '<div class="consolidation-row"><span class="cl">Procedures</span><span class="cv">' + procItems.length + '</span></div>';
       html += '<div class="consolidation-row"><span class="cl">Relations</span><span class="cv">' + relItems.length + '</span></div>';
       if (semFacts.length === 0 && procItems.length === 0 && relItems.length === 0) {
-        html += '<div style="font-size:12px;color:var(--ink-faint);margin-top:8px;line-height:1.5;">Consolidation distills session observations into durable facts and repeatable procedures. It runs on a schedule when <code>CONSOLIDATION_ENABLED=true</code> and an LLM provider key are set, or on demand via <code>memory_consolidate</code>.</div>';
+        html += '<div style="font-size:12px;color:var(--ink-faint);margin-top:8px;line-height:1.5;">Consolidation distills session observations into durable facts and repeatable procedures. It runs on a schedule when an LLM provider key is set (on by default; set <code>CONSOLIDATION_ENABLED=false</code> to opt out), or on demand via <code>memory_consolidate</code>.</div>';
       }
       html += '</div>';
 

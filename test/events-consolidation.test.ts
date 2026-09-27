@@ -24,6 +24,7 @@ import {
   isGraphExtractionEnabled,
   getConsolidationCooldownMs,
 } from "../src/config.js";
+import { fingerprintId } from "../src/state/schema.js";
 import { isReflectEnabled } from "../src/functions/slots.js";
 import { logger } from "../src/logger.js";
 
@@ -351,5 +352,101 @@ describe("session-stop consolidation debounce", () => {
       (c) => (c[0] as { function_id: string }).function_id === "mem::consolidate-pipeline",
     ).length;
     expect(consolidateCount).toBe(2);
+  });
+});
+
+// The graph-extraction watermark: /session/end fires every agent turn, so the
+// watermark decides whether the whole session is re-merged (quadratic engine
+// work per #843) or just the delta since the last extract.
+describe("graph extraction watermark", () => {
+  function graphSdk() {
+    const built = mockSdk();
+    const originalTrigger = built.sdk.trigger;
+    const spy = vi.fn(async (input: { function_id: string }) => {
+      if (input.function_id === "mem::graph-extract") return { success: true };
+      return originalTrigger(input);
+    });
+    built.sdk.trigger = spy;
+    return { ...built, graphSpy: spy };
+  }
+
+  it("never persists a watermark above wall-clock time", async () => {
+    const kv = mockKV();
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    kv.list.mockResolvedValue([
+      { id: "obs_1", title: "memory", timestamp: "2026-01-01T00:00:00Z" },
+      { id: "obs_2", title: "memory", timestamp: future },
+    ] as never);
+    const { sdk, handlers } = graphSdk();
+    registerEventTriggers(sdk as never, kv as never);
+
+    await handlers.get("event::session::stopped")!({ sessionId: "ses_future" });
+
+    const update = kv.update.mock.calls.find((c) => c[0] === "mem:sessions");
+    expect(update).toBeDefined();
+    const watermark = (
+      (update![2] as Array<{ path: string; value: unknown }>).find(
+        (u) => u.path === "graphExtractedAt",
+      )!.value
+    ) as string;
+    expect(Date.parse(watermark)).toBeLessThanOrEqual(Date.now());
+    expect(Date.parse(watermark)).toBeGreaterThan(
+      Date.parse("2026-01-01T00:00:00Z"),
+    );
+  });
+
+  it("treats future-stamped observations as extracted once the digest matches, sending only the delta", async () => {
+    const kv = mockKV();
+    const past = new Date(Date.now() - 200_000).toISOString();
+    const at = new Date(Date.now() - 100_000).toISOString();
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    kv.list.mockResolvedValue([
+      { id: "obs_a", title: "memory", timestamp: past },
+      { id: "obs_b", title: "memory", timestamp: future },
+    ] as never);
+    const mark = fingerprintId("gx", ["obs_a", "obs_b"].sort().join(","));
+    kv.get.mockImplementation(async (scope: string) =>
+      scope === "mem:sessions"
+        ? { graphExtractedAt: at, graphExtractedDigest: mark }
+        : null,
+    );
+    const { sdk, handlers, graphSpy } = graphSdk();
+    registerEventTriggers(sdk as never, kv as never);
+
+    await handlers.get("event::session::stopped")!({ sessionId: "ses_delta" });
+
+    const extract = graphSpy.mock.calls.find(
+      (c) => (c[0] as { function_id: string }).function_id === "mem::graph-extract",
+    );
+    expect(extract).toBeDefined();
+    const sent = (
+      (extract![0] as { payload: { observations: Array<{ id: string }> } })
+        .payload
+    ).observations;
+    expect(sent.map((o) => o.id)).toEqual(["obs_b"]);
+  });
+
+  it("throttles the stale-watermark log across repeated stops", async () => {
+    const kv = mockKV();
+    kv.list.mockResolvedValue([
+      { id: "obs_1", title: "memory", timestamp: new Date().toISOString() },
+    ] as never);
+    kv.get.mockImplementation(async (scope: string) =>
+      scope === "mem:sessions"
+        ? { graphExtractedAt: "2026-01-01T00:00:00.000Z", graphExtractedDigest: "stale" }
+        : null,
+    );
+    const { sdk, handlers } = graphSdk();
+    registerEventTriggers(sdk as never, kv as never);
+
+    vi.mocked(logger.info).mockClear();
+    const stopped = handlers.get("event::session::stopped")!;
+    await stopped({ sessionId: "ses_throttle" });
+    await stopped({ sessionId: "ses_throttle" });
+
+    const staleLogs = vi.mocked(logger.info).mock.calls.filter(
+      (c) => c[0] === "graph-extract watermark stale, re-extracting session",
+    );
+    expect(staleLogs).toHaveLength(1);
   });
 });

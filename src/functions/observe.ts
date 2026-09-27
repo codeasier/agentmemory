@@ -96,9 +96,16 @@ function boundValue(value: unknown, maxChars: number): unknown {
   if (value !== null && typeof value === "object") {
     let remaining = Math.max(0, maxChars - 2);
     const entries: Array<[string, unknown]> = [];
-    for (const [key, item] of Object.entries(
-      value as Record<string, unknown>,
-    ).sort(([, a], [, b]) => serializedSize(a) - serializedSize(b))) {
+    // Decorate-sort-undecorate: computing serializedSize inside the
+    // comparator calls the recursive size walk O(k log k) times. This is the
+    // hottest path in the system (every observe request), so size each entry
+    // once and sort the precomputed sizes instead.
+    const sized = Object.entries(value as Record<string, unknown>).map(
+      (entry) => ({ entry, size: serializedSize(entry[1]) }),
+    );
+    sized.sort((a, b) => a.size - b.size);
+    for (const { entry } of sized) {
+      const [key, item] = entry;
       const comma = entries.length > 0 ? 1 : 0;
       const overhead = comma + JSON.stringify(key).length + 1;
       if (remaining <= overhead) break;
@@ -161,6 +168,19 @@ export function registerObserveFunction(
       }
 
       const obsId = generateId("obs");
+
+      // A future-stamped timestamp (client clock skew, misconfigured clock)
+      // would pin the graph-extraction watermark above every subsequent real
+      // observation and permanently block incremental extraction. Clamp to
+      // ingest time; past timestamps (jsonl replay) pass through untouched.
+      const ingestAtMs = Date.now();
+      const parsedPayloadTs = Date.parse(payload.timestamp);
+      if (
+        Number.isFinite(parsedPayloadTs) &&
+        parsedPayloadTs > ingestAtMs
+      ) {
+        payload.timestamp = new Date(ingestAtMs).toISOString();
+      }
 
       let dedupHash: string | undefined;
       if (dedupMap) {
@@ -291,6 +311,71 @@ export function registerObserveFunction(
           raw.agentId = inheritedAgentId;
         }
 
+        // Advance the session counter BEFORE writing the observation. If the
+        // observation write then fails, the counter over-counts by one — the
+        // safe direction, since over-counts self-heal at the cap recount.
+        // The previous order (write first, count afterwards) let a failed
+        // session-row update leave the store ahead of the counter, and
+        // repeated update failures grew the session past
+        // MAX_OBS_PER_SESSION.
+        if (existingSession) {
+          const updates: Array<{ type: "set"; path: string; value: unknown }> = [
+            { type: "set", path: "updatedAt", value: new Date().toISOString() },
+            {
+              type: "set",
+              path: "observationCount",
+              value: (existingSession.observationCount || 0) + 1,
+            },
+          ];
+          if (!existingSession.firstPrompt && typeof raw.userPrompt === "string") {
+            const trimmed = raw.userPrompt.replace(/\s+/g, " ").trim();
+            if (trimmed.length > 0) {
+              updates.push({
+                type: "set",
+                path: "firstPrompt",
+                value: trimmed.slice(0, 200),
+              });
+            }
+          }
+          await kv.update(KV.sessions, payload.sessionId, updates);
+        } else if (
+          typeof payload.project === "string" &&
+          payload.project.trim().length > 0 &&
+          typeof payload.cwd === "string" &&
+          payload.cwd.trim().length > 0
+        ) {
+          // OpenCode (and any plugin that skips POST /session/start)
+          // can fire observations before the session record exists. Without
+          // an implicit create, those observations stack up but
+          // `memory_sessions` never lists them, and summarize bails with
+          // "Session not found for summarize". Create the session now from
+          // the observation payload — but only when project + cwd are
+          // present (HookPayload contract). Older test payloads without
+          // those fields keep their original no-op behaviour.
+          const trimmedPrompt =
+            typeof raw.userPrompt === "string"
+              ? raw.userPrompt.replace(/\s+/g, " ").trim().slice(0, 200)
+              : undefined;
+          const ts = new Date().toISOString();
+          await kv.set(KV.sessions, payload.sessionId, {
+            id: payload.sessionId,
+            project: payload.project,
+            cwd: payload.cwd,
+            startedAt: payload.timestamp ?? ts,
+            updatedAt: ts,
+            status: "active",
+            // +1 for the observation written below this create: the list
+            // cannot have seen it yet.
+            observationCount: maxObservationsPerSession && maxObservationsPerSession > 0
+              ? observationCount + 1
+              : (await kv.list(KV.observations(payload.sessionId))).length + 1,
+            ...(inheritedAgentId ? { agentId: inheritedAgentId } : {}),
+            ...(trimmedPrompt && trimmedPrompt.length > 0
+              ? { firstPrompt: trimmedPrompt }
+              : {}),
+          });
+        }
+
         if (pendingImageData && (pendingImageData.startsWith("data:image/") || pendingImageData.startsWith("iVBORw0KGgo") || pendingImageData.startsWith("/9j/"))) {
           const { filePath, bytesWritten } = await saveImageToDisk(pendingImageData);
           raw.imageData = filePath;
@@ -365,63 +450,6 @@ export function registerObserveFunction(
           },
           action: TriggerAction.Void(),
         });
-
-        const session = existingSession;
-        if (session) {
-          const updates: Array<{ type: "set"; path: string; value: unknown }> = [
-            { type: "set", path: "updatedAt", value: new Date().toISOString() },
-            {
-              type: "set",
-              path: "observationCount",
-              value: (session.observationCount || 0) + 1,
-            },
-          ];
-          if (!session.firstPrompt && typeof raw.userPrompt === "string") {
-            const trimmed = raw.userPrompt.replace(/\s+/g, " ").trim();
-            if (trimmed.length > 0) {
-              updates.push({
-                type: "set",
-                path: "firstPrompt",
-                value: trimmed.slice(0, 200),
-              });
-            }
-          }
-          await kv.update(KV.sessions, payload.sessionId, updates);
-        } else if (
-          typeof payload.project === "string" &&
-          payload.project.trim().length > 0 &&
-          typeof payload.cwd === "string" &&
-          payload.cwd.trim().length > 0
-        ) {
-          // OpenCode (and any plugin that skips POST /session/start)
-          // can fire observations before the session record exists. Without
-          // an implicit create, those observations stack up but
-          // `memory_sessions` never lists them, and summarize bails with
-          // "Session not found for summarize". Create the session now from
-          // the observation payload — but only when project + cwd are
-          // present (HookPayload contract). Older test payloads without
-          // those fields keep their original no-op behaviour.
-          const trimmedPrompt =
-            typeof raw.userPrompt === "string"
-              ? raw.userPrompt.replace(/\s+/g, " ").trim().slice(0, 200)
-              : undefined;
-          const ts = new Date().toISOString();
-          await kv.set(KV.sessions, payload.sessionId, {
-            id: payload.sessionId,
-            project: payload.project,
-            cwd: payload.cwd,
-            startedAt: payload.timestamp ?? ts,
-            updatedAt: ts,
-            status: "active",
-            observationCount: maxObservationsPerSession && maxObservationsPerSession > 0
-              ? observationCount + 1
-              : (await kv.list(KV.observations(payload.sessionId))).length,
-            ...(inheritedAgentId ? { agentId: inheritedAgentId } : {}),
-            ...(trimmedPrompt && trimmedPrompt.length > 0
-              ? { firstPrompt: trimmedPrompt }
-              : {}),
-          });
-        }
 
         // Per-observation LLM compression is opt-in as of 0.8.8.
         // Default path: build a zero-LLM synthetic compression so recall

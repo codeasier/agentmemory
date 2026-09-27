@@ -85,7 +85,15 @@ export async function sweepAuditLog(
   more: boolean;
 }> {
   const max = auditMax();
-  if (max === 0) {
+  const batchSize = envCounter(
+    "AGENTMEMORY_AUDIT_SWEEP_DELETE_BATCH",
+    DEFAULT_AUDIT_SWEEP_DELETE_BATCH,
+  );
+  // max=0 disables trimming; batch=0 disables deletion. Either way the sweep
+  // is a no-op, so skip the whole-scope kv.list as well — a zero batch used
+  // to keep materializing the entire audit log every interval while deleting
+  // nothing and reporting more=true forever.
+  if (max === 0 || batchSize === 0) {
     return { scanned: 0, removed: 0, failed: 0, remaining: 0, max, more: false };
   }
   const all = await kv.list<AuditEntry>(KV.audit);
@@ -100,10 +108,6 @@ export async function sweepAuditLog(
     };
   }
 
-  const batchSize = envCounter(
-    "AGENTMEMORY_AUDIT_SWEEP_DELETE_BATCH",
-    DEFAULT_AUDIT_SWEEP_DELETE_BATCH,
-  );
   const concurrency = Math.min(
     256,
     Math.max(
@@ -114,23 +118,23 @@ export async function sweepAuditLog(
       ),
     ),
   );
-  const newestFirst = [...all].sort(
-    (a, b) => auditTimestamp(b) - auditTimestamp(a),
-  );
+  // Decorate-sort-undecorate: Date.parse inside the comparator re-parses
+  // every timestamp O(N log N) times over the whole log. Parse once.
+  const newestFirst = all
+    .map((entry) => ({ entry, at: auditTimestamp(entry) }))
+    .sort((a, b) => b.at - a.at);
   const cutoff = newestFirst[max - 1];
-  const targets = cutoff && batchSize > 0
+  const targets = cutoff
     ? newestFirst
-        .filter((entry) => auditTimestamp(entry) < auditTimestamp(cutoff))
+        .filter((row) => row.at < cutoff.at)
         .slice(-batchSize)
+        .map((row) => row.entry)
     : [];
-  const failed =
-    batchSize === 0
-      ? 0
-      : await deleteAuditRows(
-          kv,
-          targets.map((entry) => entry.id),
-          concurrency,
-        );
+  const failed = await deleteAuditRows(
+    kv,
+    targets.map((entry) => entry.id),
+    concurrency,
+  );
   const removed = targets.length - failed;
   const remaining = all.length - removed;
 

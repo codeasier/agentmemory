@@ -82,11 +82,19 @@ function normalizeList(value: unknown): string[] {
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
-function parseLimit(raw: unknown, fallback = DEFAULT_LIMIT): number {
+// memory_audit serves up to MAX_AUDIT_QUERY_LIMIT on the daemon path and the
+// shared tool schema advertises maximum: 1000; the standalone fallback must
+// not silently clamp the same request to 100.
+const MAX_AUDIT_LIMIT = 1000;
+function parseLimit(
+  raw: unknown,
+  fallback = DEFAULT_LIMIT,
+  max = MAX_LIMIT,
+): number {
   if (typeof raw !== "number" && typeof raw !== "string") return fallback;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return fallback;
-  return Math.min(Math.floor(n), MAX_LIMIT);
+  return Math.min(Math.floor(n), max);
 }
 
 function textResponse(payload: unknown, pretty = false): {
@@ -176,7 +184,7 @@ function validate(toolName: string, args: Record<string, unknown>): Validated {
     case "memory_export":
       return v;
     case "memory_audit": {
-      v.limit = args["limit"] === 0 ? 100 : parseLimit(args["limit"], 50);
+      v.limit = args["limit"] === 0 ? 100 : parseLimit(args["limit"], 50, MAX_AUDIT_LIMIT);
       return v;
     }
     default:

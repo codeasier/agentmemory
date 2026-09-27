@@ -25,6 +25,16 @@ const CONSOLIDATION_MARKER_KEY = "consolidation:lastRun";
 const observationFingerprint = (obs: CompressedObservation[]): string =>
   fingerprintId("gx", obs.map((o) => o.id).sort().join(","));
 
+// The watermark-stale log fires on the incremental graph path, i.e. on every
+// agent turn while a session's extracted digest keeps mismatching (future-
+// stamped observations, replayed sessions). Throttle per session so the
+// signal survives without per-turn volume, mirroring index-persistence's
+// lastFailureLogAt. Scoped to the registration so each engine start (and
+// each test harness registration) starts unthrottled.
+const WATERMARK_LOG_THROTTLE_MS = 60_000;
+
+let sessionActivitySeq = 0;
+
 async function consolidationDueUnserialized(kv: StateKV): Promise<boolean> {
   const cooldownMs = getConsolidationCooldownMs();
   if (cooldownMs <= 0) return true; // debounce disabled
@@ -52,6 +62,8 @@ function consolidationDue(kv: StateKV): Promise<boolean> {
 }
 
 export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
+  const watermarkLogAt = new Map<string, number>();
+
   sdk.registerFunction(
     "event::session::started",
     async (data: {
@@ -149,6 +161,7 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
         const mark = session?.graphExtractedDigest;
         const incremental = isIncrementalGraphExtractionEnabled();
         const atMs = typeof at === "string" ? Date.parse(at) : Number.NaN;
+        const nowMs = Date.now();
         const times = compressed.map((observation) => {
           const parsed = Date.parse(observation.timestamp);
           return Number.isFinite(parsed) ? parsed : 0;
@@ -159,17 +172,31 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
           if (!Number.isFinite(atMs)) {
             persistWatermark = true;
           } else {
-            const seen = compressed.filter((_, index) => times[index] <= atMs);
+            // A future-stamped observation (client clock skew, replayed
+            // session) never satisfies t <= watermark, so it would fall out
+            // of the "already extracted" set and trip the digest mismatch
+            // below on every turn. Treat anything above wall-clock time as
+            // part of the extracted half: a NEW future-stamped observation
+            // still mismatches the digest (full re-extract), but an already
+            // extracted one costs only its own delta re-merge per turn until
+            // real time passes its stamp.
+            const seen = compressed.filter(
+              (_, index) => times[index] <= atMs || times[index] > nowMs,
+            );
             if (observationFingerprint(seen) === mark) {
               batch = compressed.filter((_, index) => times[index] > atMs);
               persistWatermark = true;
             } else {
               persistWatermark = true;
-              logger.info("graph-extract watermark stale, re-extracting session", {
-                sessionId: data.sessionId,
-                atOrBelow: seen.length,
-                total: compressed.length,
-              });
+              const lastLogAt = watermarkLogAt.get(data.sessionId) ?? 0;
+              if (nowMs - lastLogAt >= WATERMARK_LOG_THROTTLE_MS) {
+                watermarkLogAt.set(data.sessionId, nowMs);
+                logger.info("graph-extract watermark stale, re-extracting session", {
+                  sessionId: data.sessionId,
+                  atOrBelow: seen.length,
+                  total: compressed.length,
+                });
+              }
             }
           }
         }
@@ -183,7 +210,13 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
               throw new Error(result?.error ?? "graph extraction did not confirm success");
             }
             if (persistWatermark || session?.graphExtractRetryAt) {
-              const newest = times.reduce((max, time) => Math.max(max, time), 0);
+              // Clamp to wall-clock: a future-stamped observation must never
+              // pin the watermark above every subsequent real timestamp,
+              // which would permanently block incremental extraction.
+              const newest = times.reduce(
+                (max, time) => Math.max(max, Math.min(time, nowMs)),
+                0,
+              );
               await kv.update(KV.sessions, data.sessionId, [
                 ...(persistWatermark ? [
                   { type: "set", path: "graphExtractedAt", value: new Date(newest).toISOString() },
@@ -273,7 +306,9 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
         payload: {
           stream_name: STREAM.name,
           group_id: STREAM.viewerGroup,
-          id: `session-activity-${payload.key}-${Date.now()}`,
+          // Sequence suffix: two session updates inside the same millisecond
+          // would otherwise collide on one live-event id and one drops.
+          id: `session-activity-${payload.key}-${Date.now()}-${sessionActivitySeq++}`,
           type: "session.activity",
           data: {
             sessionId: payload.key,

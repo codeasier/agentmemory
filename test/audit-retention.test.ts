@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { parsePositiveIntervalMs } from "../src/config.js";
 
 vi.mock("../src/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -193,7 +195,7 @@ describe("audit log retention", () => {
     expect(kv.store.get("mem:audit")!.size).toBe(250);
   });
 
-  it("does not select any rows when the delete batch is zero", async () => {
+  it("treats a zero delete batch as disabling the sweep", async () => {
     process.env.AGENTMEMORY_AUDIT_MAX = "10";
     process.env.AGENTMEMORY_AUDIT_SWEEP_DELETE_BATCH = "0";
     const { sweepAuditLog } = await import("../src/functions/audit.js");
@@ -201,10 +203,12 @@ describe("audit log retention", () => {
     await seedAudit(kv, 30);
 
     expect(await sweepAuditLog(kv as never)).toMatchObject({
+      scanned: 0,
       removed: 0,
-      remaining: 30,
-      more: true,
+      failed: 0,
+      more: false,
     });
+    expect(kv.list).not.toHaveBeenCalled();
     expect(kv.store.get("mem:audit")!.size).toBe(30);
   });
 
@@ -262,5 +266,33 @@ describe("audit log retention", () => {
       expect((await drainAuditSweeps(sweep)).followUp).toBe(false);
       expect(sweep).toHaveBeenCalledTimes(1);
     }
+  });
+});
+
+describe("audit sweep scheduling", () => {
+  const src = readFileSync("src/index.ts", "utf-8");
+
+  // Unlike eviction (opt-in), the audit sweep is ON by default — only the
+  // literal "false" opts out. This is the destructive default-on path, so
+  // the wiring needs the same source-assertion coverage the eviction
+  // scheduler has.
+  it("is on by default and only the literal false disables it", () => {
+    expect(src).toMatch(
+      /if\s*\(\s*getEnvVar\("AGENTMEMORY_AUDIT_SWEEP_ENABLED"\)\s*!==\s*"false"\s*\)/,
+    );
+  });
+
+  it("defaults to a one hour interval", () => {
+    expect(parsePositiveIntervalMs(undefined, 3600000)).toBe(3600000);
+  });
+
+  it("registers an unref'd interval with completion logging, follow-up scheduling and an overlap guard", () => {
+    expect(src).toMatch(/const\s+auditSweepTimer\s*=\s*setInterval/);
+    expect(src).toMatch(/auditSweepTimer\.unref\(\)/);
+    expect(src).toMatch(/logger\.info\(\s*"Scheduled audit sweep complete"/);
+    expect(src).toMatch(/logger\.warn\(\s*"Scheduled audit sweep failed"/);
+    expect(src).toMatch(/let\s+auditSweepInFlight\s*=\s*false;/);
+    expect(src).toMatch(/followUpTimer\s*=\s*setTimeout/);
+    expect(src).toMatch(/followUpTimer\.unref\(\)/);
   });
 });

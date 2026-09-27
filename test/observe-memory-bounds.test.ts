@@ -246,6 +246,62 @@ describe("observe memory bounds", () => {
     expect((await kv.get<{ observationCount: number }>("mem:sessions", "ses_uncapped"))?.observationCount).toBe(2);
   });
 
+  it("clamps future-stamped timestamps to ingest time", async () => {
+    const { registerObserveFunction } = await import("../src/functions/observe.js");
+    const sdk = mockSdk();
+    const kv = mockKV();
+    registerObserveFunction(sdk as never, kv as never);
+
+    const before = Date.now();
+    await sdk.trigger("mem::observe", {
+      sessionId: "ses_skew",
+      hookType: "post_tool_use",
+      timestamp: new Date(before + 86_400_000).toISOString(),
+      data: { tool_name: "Read" },
+    });
+
+    const rawWrite = kv.writes.find((write) => write.scope === "mem:obs:ses_skew")!.data as RawObservation;
+    const stored = Date.parse(rawWrite.timestamp);
+    expect(stored).toBeGreaterThanOrEqual(before);
+    expect(stored).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("advances the session counter before the observation write", async () => {
+    const { registerObserveFunction } = await import("../src/functions/observe.js");
+    const sdk = mockSdk();
+    const kv = mockKV();
+    await kv.set("mem:sessions", "ses_brownout", {
+      id: "ses_brownout",
+      observationCount: 2,
+      status: "active",
+    });
+    const failing = {
+      ...kv,
+      set: async (scope: string, key: string, data: unknown) => {
+        if (scope === "mem:obs:ses_brownout") throw new Error("engine brownout");
+        return kv.set(scope, key, data);
+      },
+    };
+    registerObserveFunction(sdk as never, failing as never, undefined, 10);
+
+    await expect(
+      sdk.trigger("mem::observe", {
+        sessionId: "ses_brownout",
+        hookType: "post_tool_use",
+        timestamp: new Date().toISOString(),
+        data: { tool_name: "Read" },
+      }),
+    ).rejects.toThrow("engine brownout");
+
+    // The counter must already be advanced: over-counting is the safe
+    // direction (self-heals at the cap recount), while the old write-first
+    // order left the counter stale-low whenever the session update failed
+    // after a successful observation write.
+    expect(
+      (await kv.get<{ observationCount: number }>("mem:sessions", "ses_brownout"))?.observationCount,
+    ).toBe(3);
+  });
+
   it("bounds tool payloads and the duplicated raw envelope", async () => {
     const { OBSERVE_PAYLOAD_LIMITS, registerObserveFunction } = await import(
       "../src/functions/observe.js"

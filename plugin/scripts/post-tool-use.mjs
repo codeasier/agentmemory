@@ -116,11 +116,41 @@ function extractImageData(output) {
 		cleanOutput: output
 	};
 }
+const TRUNCATION_MARKER = "...[truncated]";
 function truncate(value, max) {
-	if (typeof value === "string" && value.length > max) return value.slice(0, max) + "...[truncated]";
+	if (typeof value === "string") {
+		if (value.length + 14 <= max) return value;
+		return value.slice(0, Math.max(0, max - 14)) + TRUNCATION_MARKER;
+	}
+	if (Array.isArray(value)) {
+		if (JSON.stringify(value).length <= max) return value;
+		const bounded = [];
+		let remaining = Math.max(0, max - 2);
+		for (const item of value) {
+			const comma = bounded.length > 0 ? 1 : 0;
+			if (remaining <= comma) break;
+			const next = truncate(item, remaining - comma);
+			const cost = comma + JSON.stringify(next).length;
+			if (cost > remaining) break;
+			bounded.push(next);
+			remaining -= cost;
+		}
+		return bounded;
+	}
 	if (typeof value === "object" && value !== null) {
-		const str = JSON.stringify(value);
-		return str.length > max ? str.slice(0, max) + "...[truncated]" : value;
+		if (JSON.stringify(value).length <= max) return value;
+		const bounded = {};
+		let remaining = Math.max(0, max - 2);
+		for (const [key, item] of Object.entries(value)) {
+			const overhead = (Object.keys(bounded).length > 0 ? 1 : 0) + JSON.stringify(key).length + 1;
+			if (remaining <= overhead) break;
+			const next = truncate(item, remaining - overhead);
+			const cost = overhead + JSON.stringify(next).length;
+			if (cost > remaining) break;
+			bounded[key] = next;
+			remaining -= cost;
+		}
+		return bounded;
 	}
 	return value;
 }
