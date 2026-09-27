@@ -7,7 +7,7 @@ import type {
   CompressedObservation,
   MemoryProvider,
 } from "../types.js";
-import { KV, generateId } from "../state/schema.js";
+import { KV, boundProvenance, generateId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
 import {
   GRAPH_EXTRACTION_SYSTEM,
@@ -275,18 +275,14 @@ function snapshotPushEdgeIfBothInTop(
 function mergeNode(
   existing: GraphNode,
   incoming: GraphNode,
-  obsIds: string[],
   capturedAt: string,
 ): GraphNode {
   return {
     ...existing,
-    sourceObservationIds: [
-      ...new Set([
-        ...existing.sourceObservationIds,
-        ...incoming.sourceObservationIds,
-        ...obsIds,
-      ]),
-    ],
+    sourceObservationIds: boundProvenance([
+      ...existing.sourceObservationIds,
+      ...incoming.sourceObservationIds,
+    ]),
     properties: { ...existing.properties, ...incoming.properties },
     updatedAt: capturedAt,
   };
@@ -294,13 +290,14 @@ function mergeNode(
 
 function mergeEdge(
   existing: GraphEdge,
-  obsIds: string[],
+  sourceObservationIds: string[],
 ): GraphEdge {
   return {
     ...existing,
-    sourceObservationIds: [
-      ...new Set([...existing.sourceObservationIds, ...obsIds]),
-    ],
+    sourceObservationIds: boundProvenance([
+      ...existing.sourceObservationIds,
+      ...sourceObservationIds,
+    ]),
   };
 }
 
@@ -411,7 +408,7 @@ function parseGraphXml(
       type,
       name,
       properties,
-      sourceObservationIds: observationIds,
+      sourceObservationIds: boundProvenance(observationIds),
       createdAt: now,
     });
   };
@@ -443,7 +440,7 @@ function parseGraphXml(
       sourceNodeId: sourceNode.id,
       targetNodeId: targetNode.id,
       weight: Math.max(0, Math.min(1, weight)),
-      sourceObservationIds: observationIds,
+      sourceObservationIds: boundProvenance(observationIds),
       createdAt: now,
     });
   }
@@ -484,7 +481,10 @@ export function extractGraphHeuristics(
       nodeByKey.set(key, node);
       nodes.push(node);
     } else if (!node.sourceObservationIds.includes(obsId)) {
-      node.sourceObservationIds.push(obsId);
+      node.sourceObservationIds = boundProvenance([
+        ...node.sourceObservationIds,
+        obsId,
+      ]);
     }
     return node;
   };
@@ -497,7 +497,10 @@ export function extractGraphHeuristics(
       const existing = edgeByPair.get(pair);
       if (existing) {
         if (!existing.sourceObservationIds.includes(obs.id)) {
-          existing.sourceObservationIds.push(obs.id);
+          existing.sourceObservationIds = boundProvenance([
+            ...existing.sourceObservationIds,
+            obs.id,
+          ]);
         }
         return;
       }
@@ -552,7 +555,6 @@ export async function persistGraphDelta(
   kv: StateKV,
   nodes: GraphNode[],
   edges: GraphEdge[],
-  obsIds: string[],
 ): Promise<{ newNodeCount: number; newEdgeCount: number }> {
   const snap = (await readSnapshot(kv)) ?? emptySnapshot();
   const capturedAt = new Date().toISOString();
@@ -590,9 +592,14 @@ export async function persistGraphDelta(
       }
     }
 
+    const persistedNode: GraphNode = {
+      ...node,
+      sourceObservationIds: boundProvenance(node.sourceObservationIds),
+    };
+
     if (existing) {
       idRemap.set(node.id, existing.id);
-      const merged = mergeNode(existing, node, obsIds, capturedAt);
+      const merged = mergeNode(existing, persistedNode, capturedAt);
       await kv.set(KV.graphNodes, existing.id, merged);
       // Update topNodes entry if present so a stale clone isn't
       // returned from the snapshot fast path.
@@ -602,7 +609,7 @@ export async function persistGraphDelta(
         snapMutated = true;
       }
     } else {
-      await kv.set(KV.graphNodes, node.id, node);
+      await kv.set(KV.graphNodes, node.id, persistedNode);
       await kv.set(KV.graphNameIndex, indexKey, node.id);
       await kv.set(KV.graphNodeDegree, node.id, 0);
       snap.stats.totalNodes += 1;
@@ -612,7 +619,7 @@ export async function persistGraphDelta(
       if (snap.topNodes.length < SNAPSHOT_TOP_NODES) {
         // Degree 0 still beats an empty slot — sit at the tail
         // until edges arrive and promote.
-        snap.topNodes.push(node);
+        snap.topNodes.push(persistedNode);
         snap.topDegrees[node.id] = 0;
       }
     }
@@ -623,6 +630,7 @@ export async function persistGraphDelta(
       ...rawEdge,
       sourceNodeId: idRemap.get(rawEdge.sourceNodeId) ?? rawEdge.sourceNodeId,
       targetNodeId: idRemap.get(rawEdge.targetNodeId) ?? rawEdge.targetNodeId,
+      sourceObservationIds: boundProvenance(rawEdge.sourceObservationIds),
     };
     const eKey = edgeIndexKey(edge.sourceNodeId, edge.targetNodeId, edge.type);
     const existingId = await kv.get<string>(KV.graphEdgeKey, eKey);
@@ -642,7 +650,7 @@ export async function persistGraphDelta(
     }
 
     if (existing) {
-      const merged = mergeEdge(existing, obsIds);
+      const merged = mergeEdge(existing, edge.sourceObservationIds);
       await kv.set(KV.graphEdges, existing.id, merged);
       // Replace cached topEdges entry too if present.
       const topIdx = snap.topEdges.findIndex((e) => e.id === existing!.id);
@@ -742,7 +750,6 @@ export function registerGraphFunction(
           kv,
           nodes,
           edges,
-          obsIds,
         );
 
         await recordAudit(kv, "observe", "mem::graph-extract", obsIds, {
@@ -758,7 +765,8 @@ export function registerGraphFunction(
           llm: llmEnabled && !llmError,
         });
         return {
-          success: true,
+          success: !llmError,
+          ...(llmError ? { error: llmError } : {}),
           nodesAdded: nodes.length,
           edgesAdded: edges.length,
         };

@@ -377,6 +377,17 @@ export function isGraphExtractionEnabled(): boolean {
   return getMergedEnv()["GRAPH_EXTRACTION_ENABLED"] === "true";
 }
 
+export function isIncrementalGraphExtractionEnabled(): boolean {
+  return getMergedEnv()["AGENTMEMORY_GRAPH_INCREMENTAL_EXTRACT"] !== "false";
+}
+
+export function getGraphExtractionRetryMs(): number {
+  return parsePositiveIntervalMs(
+    getEnvVar("AGENTMEMORY_GRAPH_EXTRACT_RETRY_MS"),
+    300000,
+  );
+}
+
 export function getGraphBatchSize(): number {
   return safeParseInt(getMergedEnv()["GRAPH_EXTRACTION_BATCH_SIZE"], 10);
 }
@@ -514,4 +525,33 @@ export function loadFallbackConfig(): FallbackConfig {
       return true;
     });
   return { providers };
+}
+
+export const TIMER_MAX_INTERVAL_MS = 2147483647;
+
+export function parsePositiveIntervalMs(
+  raw: string | undefined,
+  fallbackMs: number,
+): number {
+  if (raw === undefined || !/^\d+$/.test(raw.trim())) return fallbackMs;
+  const n = Number(raw.trim());
+  return n > 0 && n <= TIMER_MAX_INTERVAL_MS ? n : fallbackMs;
+}
+
+export function isEvictionEnabled(): boolean {
+  return getEnvVar("AGENTMEMORY_EVICTION_ENABLED") === "true";
+}
+
+export function getEvictionIntervalMs(): number {
+  return parsePositiveIntervalMs(
+    getEnvVar("AGENTMEMORY_EVICTION_INTERVAL_MS"),
+    86400000,
+  );
+}
+
+export function getIndexReclaimBootMaxDeletes(): number {
+  const raw = getEnvVar("AGENTMEMORY_INDEX_RECLAIM_BOOT_MAX_SHARDS");
+  if (raw === undefined || !/^\d+$/.test(raw.trim())) return 200;
+  const value = Number(raw.trim());
+  return Number.isSafeInteger(value) && value >= 0 ? value : 200;
 }

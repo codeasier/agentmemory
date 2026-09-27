@@ -1167,9 +1167,9 @@ iii console --port 3114 \
   <em>Traces: waterfall / flame / desglose por servicio para cada operación de memoria.</em>
 </p>
 
-**Las trazas ya están activas:**
+**Las trazas están desactivadas por defecto:**
 
-`iii-config.yaml` se sirve con el worker `iii-observability` habilitado (`exporter: memory`, `sampling_ratio: 1.0`, métricas + logs). No se necesita configuración adicional; desde el momento en que agentmemory arranca, cada operación de memoria emite una traza-span y un log estructurado que la console puede leer.
+`iii-config.yaml` mantiene desactivado el worker `iii-observability` porque sus almacenes en memoria de trazas, métricas y logs aumentan considerablemente la memoria RSS del engine durante la captura sostenida. Pon `enabled: true` en `~/.agentmemory/iii-config.yaml` cuando necesites la iii console; el bloque incluido registrará entonces logs estructurados y trazas muestreadas (`sampling_ratio: 0.1`). Las instalaciones existentes conservan su propia configuración; al actualizar, pon allí `enabled: false` una vez si no necesitas la console.
 
 Si quieres exportar a Jaeger/Honeycomb/Grafana Tempo en su lugar, cambia `exporter: memory` por `exporter: otlp` y define el endpoint del collector según la documentación de observabilidad de iii.
 
@@ -1189,7 +1189,7 @@ Eso significa que un comando más extiende agentmemory con una capacidad complet
 iii worker add iii-pubsub          # fan memory writes out to every connected instance
 iii worker add iii-cron            # scheduled consolidation, decay sweeps, snapshot rotation
 iii worker add iii-queue           # durable retries for embedding + compression jobs
-iii worker add iii-observability   # OTEL traces on every memory op (default on)
+iii worker add iii-observability   # OTEL traces on every memory op (off by default)
 iii worker add iii-sandbox         # run recalled code inside an isolated microVM
 iii worker add iii-database        # swap in a SQL-backed state adapter
 iii worker add mcp                 # generic MCP host alongside the agentmemory MCP
@@ -1202,7 +1202,7 @@ Cada `iii worker add` registra nuevas funciones y triggers en el mismo engine en
 | [`iii-pubsub`](https://workers.iii.dev/workers/iii-pubsub) | Memoria multi-instancia: cada `remember` se difunde, cada `search` lee la unión |
 | [`iii-cron`](https://workers.iii.dev/workers/iii-cron) | Ciclo de vida programado: consolidación nocturna, snapshots semanales, decaimiento en un reloj fijo |
 | [`iii-queue`](https://workers.iii.dev/workers/iii-queue) | Reintentos duraderos: los jobs de embedding + compresión fallidos sobreviven al reinicio, sin observaciones perdidas |
-| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | Trazas OTEL, métricas y logs en cada función, cableado en `iii-config.yaml` desde el primer día |
+| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | Trazas OTEL, métricas y logs en cada función; presente en `iii-config.yaml` pero desactivado por defecto para ahorrar memoria del engine |
 | [`iii-sandbox`](https://workers.iii.dev/workers/iii-sandbox) | El código salido de `memory_recall` corre dentro de una VM desechable, no en tu shell |
 | [`iii-database`](https://workers.iii.dev/workers/iii-database) | Adaptador de estado respaldado por SQL cuando te quedas pequeño con el KV in-memory por defecto |
 | [`mcp`](https://workers.iii.dev/workers/mcp) | Levanta servidores MCP adicionales junto al MCP de agentmemory, compartiendo el mismo engine |
@@ -1499,7 +1499,7 @@ Crea `~/.agentmemory/.env`:
                                    # model to skip its hidden thinking pass
                                    # during graph extraction. Faster runs;
                                    # relation quality can drop slightly.
-# CONSOLIDATION_ENABLED=true
+# CONSOLIDATION_ENABLED=false   # on by default when an LLM provider is configured
 # LESSON_DECAY_ENABLED=true
 # OBSIDIAN_AUTO_EXPORT=false
 # AGENTMEMORY_EXPORT_ROOT=~/.agentmemory

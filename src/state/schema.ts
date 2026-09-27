@@ -92,6 +92,15 @@ export function fingerprintId(prefix: string, content: string): string {
   return `${prefix}_${hash.slice(0, 16)}`;
 }
 
+export const MAX_PROVENANCE_IDS = 50;
+
+export function boundProvenance(
+  ids: readonly string[],
+  max = MAX_PROVENANCE_IDS,
+): string[] {
+  return [...new Set(ids)].slice(-Math.max(1, max));
+}
+
 // CJK/Japanese/Thai text carries no inter-word whitespace, so a plain
 // split(/\s+/) collapses a whole sentence into one token and the two token
 // sets never overlap — dedup silently stops working. When either input

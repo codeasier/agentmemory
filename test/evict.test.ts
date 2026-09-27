@@ -1,10 +1,22 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import {
+  getEvictionIntervalMs,
+  getIndexReclaimBootMaxDeletes,
+  isEvictionEnabled,
+  parsePositiveIntervalMs,
+  TIMER_MAX_INTERVAL_MS,
+} from "../src/config.js";
 import type {
   CompressedObservation,
   RawObservation,
   Session,
 } from "../src/types.js";
 import { registerEvictFunction } from "../src/functions/evict.js";
+import {
+  getSearchIndex,
+  setIndexPersistence,
+} from "../src/functions/search.js";
 import { KV } from "../src/state/schema.js";
 
 vi.mock("../src/logger.js", () => ({
@@ -125,6 +137,11 @@ function storeForObservedSession(sessionId: string): Store {
 }
 
 describe("mem::evict stale sessions", () => {
+  beforeEach(() => {
+    getSearchIndex().clear();
+    setIndexPersistence(null);
+  });
+
   it("runs session recovery before deleting a stale observed session", async () => {
     const sessionId = "ses_stale";
     const store = storeForObservedSession(sessionId);
@@ -293,5 +310,156 @@ describe("mem::evict stale sessions", () => {
     expect(calls.map((call) => call.function_id)).not.toContain(
       "event::session::stopped",
     );
+  });
+
+  it("removes evicted observations from the search index and flushes once", async () => {
+    const sessionId = "ses_index_cleanup";
+    const session = makeSession(sessionId);
+    session.startedAt = daysAgo(1);
+    const observation = makeObservation(sessionId);
+    observation.id = "obs_index_cleanup";
+    observation.timestamp = daysAgo(100);
+    observation.importance = 1;
+    const store = storeForObservations(sessionId, [observation]);
+    store.get(KV.sessions)!.set(sessionId, session);
+    const kv = mockKV(store);
+    const { sdk } = mockSdk();
+    const save = vi.fn(async () => {});
+    setIndexPersistence({ scheduleSave: vi.fn(), save });
+    getSearchIndex().add(observation);
+    registerEvictFunction(sdk as never, kv as never);
+
+    const result = (await sdk.trigger({
+      function_id: "mem::evict",
+      payload: {},
+    })) as { lowImportanceObs: number };
+
+    expect(result.lowImportanceObs).toBe(1);
+    expect(getSearchIndex().has(observation.id)).toBe(false);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not rewrite indexes on an idle eviction sweep", async () => {
+    const kv = mockKV(new Map([
+      [KV.sessions, new Map()],
+      [KV.summaries, new Map()],
+      [KV.memories, new Map()],
+      [KV.config, new Map()],
+    ]));
+    const { sdk } = mockSdk();
+    const save = vi.fn(async () => {});
+    setIndexPersistence({ scheduleSave: vi.fn(), save });
+    registerEvictFunction(sdk as never, kv as never);
+
+    await sdk.trigger({ function_id: "mem::evict", payload: {} });
+
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("leaves the search index untouched during a dry run", async () => {
+    const sessionId = "ses_dry_run";
+    const session = makeSession(sessionId);
+    session.startedAt = daysAgo(1);
+    const observation = makeObservation(sessionId);
+    observation.id = "obs_dry_run";
+    observation.timestamp = daysAgo(100);
+    observation.importance = 1;
+    const store = storeForObservations(sessionId, [observation]);
+    store.get(KV.sessions)!.set(sessionId, session);
+    const kv = mockKV(store);
+    const { sdk } = mockSdk();
+    const save = vi.fn(async () => {});
+    setIndexPersistence({ scheduleSave: vi.fn(), save });
+    getSearchIndex().add(observation);
+    registerEvictFunction(sdk as never, kv as never);
+
+    await sdk.trigger({
+      function_id: "mem::evict",
+      payload: { dryRun: true },
+    });
+
+    expect(getSearchIndex().has(observation.id)).toBe(true);
+    expect(save).not.toHaveBeenCalled();
+  });
+});
+
+describe("eviction scheduling", () => {
+  const src = readFileSync("src/index.ts", "utf-8");
+
+  beforeEach(() => {
+    delete process.env.AGENTMEMORY_EVICTION_ENABLED;
+    delete process.env.AGENTMEMORY_EVICTION_INTERVAL_MS;
+  });
+
+  afterEach(() => {
+    delete process.env.AGENTMEMORY_EVICTION_ENABLED;
+    delete process.env.AGENTMEMORY_EVICTION_INTERVAL_MS;
+  });
+
+  it("is opt-in and defaults to a 24 hour interval", () => {
+    expect(isEvictionEnabled()).toBe(false);
+    expect(getEvictionIntervalMs()).toBe(86400000);
+  });
+
+  it("reads explicit scheduler settings", () => {
+    process.env.AGENTMEMORY_EVICTION_ENABLED = "true";
+    process.env.AGENTMEMORY_EVICTION_INTERVAL_MS = "3600000";
+    expect(isEvictionEnabled()).toBe(true);
+    expect(getEvictionIntervalMs()).toBe(3600000);
+  });
+
+  it("bounds boot index-reclaim deletes to a safe non-negative integer", () => {
+    delete process.env.AGENTMEMORY_INDEX_RECLAIM_BOOT_MAX_SHARDS;
+    expect(getIndexReclaimBootMaxDeletes()).toBe(200);
+
+    process.env.AGENTMEMORY_INDEX_RECLAIM_BOOT_MAX_SHARDS = "50";
+    expect(getIndexReclaimBootMaxDeletes()).toBe(50);
+
+    process.env.AGENTMEMORY_INDEX_RECLAIM_BOOT_MAX_SHARDS = "0";
+    expect(getIndexReclaimBootMaxDeletes()).toBe(0);
+
+    for (const bogus of ["abc", "-5", "1.5", "9999999999999999999999"]) {
+      process.env.AGENTMEMORY_INDEX_RECLAIM_BOOT_MAX_SHARDS = bogus;
+      expect(getIndexReclaimBootMaxDeletes()).toBe(200);
+    }
+    delete process.env.AGENTMEMORY_INDEX_RECLAIM_BOOT_MAX_SHARDS;
+  });
+
+  it("registers an unref'd interval with completion logging and an overlap guard", () => {
+    expect(src).toMatch(/if\s*\(\s*isEvictionEnabled\(\)\s*\)/);
+    expect(src).toMatch(/const\s+evictionTimer\s*=\s*setInterval/);
+    expect(src).toMatch(/evictionTimer\.unref\(\)/);
+    expect(src).toMatch(/logger\.info\(\s*"Scheduled eviction sweep complete"/);
+    expect(src).toMatch(/logger\.warn\(\s*"Scheduled eviction sweep failed"/);
+    expect(src).toMatch(/let\s+evictionInFlight\s*=\s*false;/);
+  });
+});
+
+describe("parsePositiveIntervalMs", () => {
+  it("accepts a plain positive decimal integer", () => {
+    expect(parsePositiveIntervalMs("21600000", 1)).toBe(21600000);
+    expect(parsePositiveIntervalMs(String(TIMER_MAX_INTERVAL_MS), 1)).toBe(
+      TIMER_MAX_INTERVAL_MS,
+    );
+  });
+
+  it("falls back on unset, non-numeric, zero and negative values", () => {
+    expect(parsePositiveIntervalMs(undefined, 7)).toBe(7);
+    expect(parsePositiveIntervalMs("abc", 7)).toBe(7);
+    expect(parsePositiveIntervalMs("0", 7)).toBe(7);
+    expect(parsePositiveIntervalMs("-5", 7)).toBe(7);
+  });
+
+  it("rejects values parseInt would silently truncate", () => {
+    // parseInt("1e3") and parseInt("1.5") are both 1 - a 1ms destructive
+    // loop if either were accepted.
+    expect(parsePositiveIntervalMs("1e3", 7)).toBe(7);
+    expect(parsePositiveIntervalMs("1.5", 7)).toBe(7);
+  });
+
+  it("rejects values above Node's 32-bit timer delay ceiling", () => {
+    // setInterval coerces delays above 2^31 - 1 to 1ms, so an oversized
+    // configured interval would run the sweep every millisecond.
+    expect(parsePositiveIntervalMs("2147483648", 7)).toBe(7);
   });
 });

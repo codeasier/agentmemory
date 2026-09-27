@@ -6,7 +6,7 @@ import type {
   Memory,
   MemoryProvider,
 } from "../types.js";
-import { KV, generateId } from "../state/schema.js";
+import { KV, boundProvenance, generateId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
 import {
   SEMANTIC_MERGE_SYSTEM,
@@ -107,7 +107,9 @@ export function registerConsolidationPipelineFunction(
                   id: generateId("sem"),
                   fact,
                   confidence,
-                  sourceSessionIds: recentSummaries.map((s) => s.sessionId),
+                  sourceSessionIds: boundProvenance(
+                    recentSummaries.map((s) => s.sessionId).reverse(),
+                  ),
                   sourceMemoryIds: [],
                   accessCount: 1,
                   lastAccessedAt: now,

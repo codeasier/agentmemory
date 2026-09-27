@@ -1156,9 +1156,9 @@ iii console --port 3114 \
   <em>Traces: हर memory operation के लिए waterfall / flame / service breakdown।</em>
 </p>
 
-**Traces पहले से on हैं:**
+**Traces default रूप से off हैं:**
 
-`iii-config.yaml` `iii-observability` worker enabled (`exporter: memory`, `sampling_ratio: 1.0`, metrics + logs) के साथ ship होता है। कोई extra config की ज़रूरत नहीं; जैसे ही agentmemory शुरू होता है, हर memory operation एक trace span और एक structured log emit करता है जिसे console पढ़ सकता है।
+`iii-config.yaml` में `iii-observability` worker disabled रहता है क्योंकि लगातार capture के दौरान उसके in-memory trace, metric और log stores engine RSS को काफ़ी बढ़ाते हैं। iii console की ज़रूरत हो तो `~/.agentmemory/iii-config.yaml` में `enabled: true` set करें; shipped block फिर structured logs और sampled traces (`sampling_ratio: 0.1`) रिकॉर्ड करता है। मौजूदा installs अपनी user config बनाए रखते हैं, इसलिए upgrade पर console की ज़रूरत न हो तो उसमें एक बार `enabled: false` set करें।
 
 अगर आप इसके बजाय Jaeger/Honeycomb/Grafana Tempo पर export करना चाहते हैं, तो `exporter: memory` को `exporter: otlp` में बदलें और iii के observability docs के अनुसार collector endpoint set करें।
 
@@ -1178,7 +1178,7 @@ agentmemory **पहले से एक चल रहा [iii](https://iii.dev)
 iii worker add iii-pubsub          # memory writes को हर connected instance पर fan out करें
 iii worker add iii-cron            # scheduled consolidation, decay sweeps, snapshot rotation
 iii worker add iii-queue           # embedding + compression jobs के लिए durable retries
-iii worker add iii-observability   # हर memory op पर OTEL traces (default on)
+iii worker add iii-observability   # हर memory op पर OTEL traces (default off)
 iii worker add iii-sandbox         # recalled code को isolated microVM के अंदर चलाएँ
 iii worker add iii-database        # एक SQL-backed state adapter में swap करें
 iii worker add mcp                 # agentmemory MCP के साथ-साथ generic MCP host
@@ -1191,7 +1191,7 @@ iii worker add mcp                 # agentmemory MCP के साथ-साथ 
 | [`iii-pubsub`](https://workers.iii.dev/workers/iii-pubsub) | Multi-instance memory: हर `remember` fan out होती है, हर `search` union पढ़ता है |
 | [`iii-cron`](https://workers.iii.dev/workers/iii-cron) | Scheduled lifecycle: रात की consolidation, साप्ताहिक snapshots, fixed clock पर decay |
 | [`iii-queue`](https://workers.iii.dev/workers/iii-queue) | Durable retries: failed embedding + compression jobs restart से बचते हैं, कोई lost observations नहीं |
-| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | हर function पर OTEL traces, metrics, logs, दिन एक से `iii-config.yaml` में wired |
+| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | हर function पर OTEL traces, metrics, logs; `iii-config.yaml` में मौजूद लेकिन engine memory बचाने के लिए default रूप से disabled |
 | [`iii-sandbox`](https://workers.iii.dev/workers/iii-sandbox) | `memory_recall` से निकला code throwaway VM के अंदर चलता है, आपके shell में नहीं |
 | [`iii-database`](https://workers.iii.dev/workers/iii-database) | जब आप in-memory KV defaults से बाहर निकलते हैं तो SQL-backed state adapter |
 | [`mcp`](https://workers.iii.dev/workers/mcp) | agentmemory के साथ-साथ extra MCP servers खड़े करें, वही engine share करें |
@@ -1488,7 +1488,7 @@ CONSOLIDATION_ENABLED=true
                                    # model to skip its hidden thinking pass
                                    # during graph extraction. Faster runs;
                                    # relation quality can drop slightly.
-# CONSOLIDATION_ENABLED=true
+# CONSOLIDATION_ENABLED=false   # on by default when an LLM provider is configured
 # LESSON_DECAY_ENABLED=true
 # OBSIDIAN_AUTO_EXPORT=false
 # AGENTMEMORY_EXPORT_ROOT=~/.agentmemory

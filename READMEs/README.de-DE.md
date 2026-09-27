@@ -1174,9 +1174,9 @@ iii console --port 3114 \
   <em>Traces: Wasserfall / Flame / Service-Breakdown für jede Memory-Operation.</em>
 </p>
 
-**Traces sind bereits aktiv:**
+**Traces sind standardmäßig deaktiviert:**
 
-`iii-config.yaml` wird mit aktiviertem `iii-observability`-Worker ausgeliefert (`exporter: memory`, `sampling_ratio: 1.0`, Metriken + Logs). Keine zusätzliche Konfig nötig; in dem Moment, in dem agentmemory startet, emittiert jede Memory-Operation einen Trace-Span und ein strukturiertes Log, das die Console lesen kann.
+`iii-config.yaml` hält den `iii-observability`-Worker deaktiviert, weil seine In-Memory-Speicher für Traces, Metriken und Logs bei anhaltender Erfassung den Engine-RSS deutlich erhöhen. Setzen Sie `enabled: true` in `~/.agentmemory/iii-config.yaml`, wenn Sie die iii Console benötigen; der mitgelieferte Block zeichnet dann strukturierte Logs und gesampelte Traces auf (`sampling_ratio: 0.1`). Bestehende Installationen behalten ihre eigene Konfiguration; setzen Sie dort beim Upgrade einmalig `enabled: false`, wenn Sie die Console nicht benötigen.
 
 Wenn Sie stattdessen zu Jaeger/Honeycomb/Grafana Tempo exportieren wollen, ändern Sie `exporter: memory` zu `exporter: otlp` und setzen den Collector-Endpunkt gemäß der iii-Observability-Doku.
 
@@ -1196,7 +1196,7 @@ Das bedeutet, ein weiterer Befehl erweitert agentmemory um eine komplett neue F�
 iii worker add iii-pubsub          # fan memory writes out to every connected instance
 iii worker add iii-cron            # scheduled consolidation, decay sweeps, snapshot rotation
 iii worker add iii-queue           # durable retries for embedding + compression jobs
-iii worker add iii-observability   # OTEL traces on every memory op (default on)
+iii worker add iii-observability   # OTEL traces on every memory op (off by default)
 iii worker add iii-sandbox         # run recalled code inside an isolated microVM
 iii worker add iii-database        # swap in a SQL-backed state adapter
 iii worker add mcp                 # generic MCP host alongside the agentmemory MCP
@@ -1209,7 +1209,7 @@ Jedes `iii worker add` registriert neue Funktionen und Trigger im selben Engine,
 | [`iii-pubsub`](https://workers.iii.dev/workers/iii-pubsub) | Multi-Instanz-Memory: jedes `remember` fächert auf, jedes `search` liest die Vereinigung |
 | [`iii-cron`](https://workers.iii.dev/workers/iii-cron) | Geplanter Lifecycle: nächtliche Konsolidierung, wöchentliche Snapshots, Decay nach fester Uhr |
 | [`iii-queue`](https://workers.iii.dev/workers/iii-queue) | Durable Retries: fehlgeschlagene Embedding-/Kompressions-Jobs überleben den Neustart, keine verlorenen Beobachtungen |
-| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | OTEL-Traces, Metriken, Logs auf jeder Funktion, in `iii-config.yaml` ab dem ersten Tag verdrahtet |
+| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | OTEL-Traces, Metriken, Logs auf jeder Funktion; in `iii-config.yaml` vorhanden, aber standardmäßig deaktiviert, um Engine-Speicher zu sparen |
 | [`iii-sandbox`](https://workers.iii.dev/workers/iii-sandbox) | Code, der aus `memory_recall` kommt, läuft in einer wegwerf-VM, nicht in Ihrer Shell |
 | [`iii-database`](https://workers.iii.dev/workers/iii-database) | SQL-gestützter State-Adapter, wenn Sie die In-Memory-KV-Voreinstellungen überwachsen |
 | [`mcp`](https://workers.iii.dev/workers/mcp) | Zusätzliche MCP-Server neben dem von agentmemory aufstellen, die sich denselben Engine teilen |

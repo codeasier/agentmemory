@@ -13,6 +13,9 @@ import {
   isConsolidationEnabled,
   isContextInjectionEnabled,
   isDropStaleIndexEnabled,
+  isEvictionEnabled,
+  getEvictionIntervalMs,
+  getIndexReclaimBootMaxDeletes,
 } from "./config.js";
 import {
   createProvider,
@@ -48,13 +51,14 @@ import { registerFileIndexFunction } from "./functions/file-index.js";
 import { registerConsolidateFunction } from "./functions/consolidate.js";
 import { registerPatternsFunction } from "./functions/patterns.js";
 import { registerRememberFunction } from "./functions/remember.js";
-import { registerEvictFunction } from "./functions/evict.js";
+import { registerEvictFunction, reportEvictionScheduled } from "./functions/evict.js";
 import { registerRelationsFunction } from "./functions/relations.js";
 import { registerTimelineFunction } from "./functions/timeline.js";
 import { registerSmartSearchFunction } from "./functions/smart-search.js";
 import { registerRecentSearchesSweepFunction } from "./functions/recent-searches-sweep.js";
 import { registerProfileFunction } from "./functions/profile.js";
 import { registerAutoForgetFunction } from "./functions/auto-forget.js";
+import { drainAuditSweeps, registerAuditSweepFunction } from "./functions/audit.js";
 import { registerExportImportFunction } from "./functions/export-import.js";
 import { registerEnrichFunction } from "./functions/enrich.js";
 import { registerClaudeBridgeFunction } from "./functions/claude-bridge.js";
@@ -101,7 +105,8 @@ import { DedupMap } from "./functions/dedup.js";
 import { registerHealthMonitor } from "./health/monitor.js";
 import { initMetrics, OTEL_CONFIG } from "./telemetry/setup.js";
 import { VERSION } from "./version.js";
-import { bootLog } from "./logger.js";
+import { bootLog, logger } from "./logger.js";
+import { parsePositiveIntervalMs } from "./config.js";
 import { mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -262,6 +267,7 @@ async function main() {
   registerTimelineFunction(sdk, kv);
   registerProfileFunction(sdk, kv);
   registerAutoForgetFunction(sdk, kv);
+  registerAuditSweepFunction(sdk, kv);
   registerExportImportFunction(sdk, kv);
   registerEnrichFunction(sdk, kv);
 
@@ -399,7 +405,10 @@ async function main() {
 
   const healthMonitor = registerHealthMonitor(sdk, kv);
 
-  const indexPersistence = new IndexPersistence(kv, bm25Index, vectorIndex);
+  const indexPersistence = new IndexPersistence(kv, bm25Index, vectorIndex, {
+    reclaimOnLoad: "background",
+    bootReclaimMaxDeletes: getIndexReclaimBootMaxDeletes(),
+  });
   // Wire the persistence hook so delete paths can flush BM25/vector
   // index mutations to disk. Without this, an in-memory remove can be
   // lost across a hard process exit and the persisted snapshot
@@ -559,6 +568,11 @@ async function main() {
 
   const autoForgetIntervalMs = parseInt(process.env.AUTO_FORGET_INTERVAL_MS || "3600000", 10);
   const consolidationIntervalMs = parseInt(process.env.CONSOLIDATION_INTERVAL_MS || "7200000", 10);
+  const auditSweepIntervalMs = parsePositiveIntervalMs(
+    getEnvVar("AGENTMEMORY_AUDIT_SWEEP_INTERVAL_MS"),
+    3600000,
+  );
+  const evictionIntervalMs = getEvictionIntervalMs();
 
   if (process.env.AUTO_FORGET_ENABLED !== "false") {
     const autoForgetTimer = setInterval(async () => {
@@ -568,6 +582,73 @@ async function main() {
     }, autoForgetIntervalMs);
     autoForgetTimer.unref();
     bootLog(`Auto-forget: enabled (every ${autoForgetIntervalMs / 60000}m)`);
+  }
+
+  let auditSweepInFlight = false;
+  if (getEnvVar("AGENTMEMORY_AUDIT_SWEEP_ENABLED") !== "false") {
+    let followUpTimer: ReturnType<typeof setTimeout> | undefined;
+    const runAuditSweep = async () => {
+      if (auditSweepInFlight) {
+        logger.warn("Audit sweep skipped — previous sweep still running");
+        return;
+      }
+      auditSweepInFlight = true;
+      const startedAt = Date.now();
+      try {
+        const { stats, followUp } = await drainAuditSweeps(() =>
+          sdk.trigger({ function_id: "mem::audit-sweep", payload: {} }),
+        );
+        logger.info("Scheduled audit sweep complete", {
+          stats,
+          durationMs: Date.now() - startedAt,
+        });
+        if (followUp && !followUpTimer) {
+          followUpTimer = setTimeout(() => {
+            followUpTimer = undefined;
+            void runAuditSweep();
+          }, Math.min(60_000, auditSweepIntervalMs));
+          followUpTimer.unref();
+        }
+      } catch (err) {
+        logger.warn("Scheduled audit sweep failed", {
+          error: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - startedAt,
+        });
+      } finally {
+        auditSweepInFlight = false;
+      }
+    };
+    const auditSweepTimer = setInterval(runAuditSweep, auditSweepIntervalMs);
+    auditSweepTimer.unref();
+    bootLog(`Audit sweep: enabled (every ${auditSweepIntervalMs / 60000}m)`);
+  }
+
+  let evictionInFlight = false;
+  if (isEvictionEnabled()) {
+    const evictionTimer = setInterval(async () => {
+      if (evictionInFlight) {
+        logger.warn("Eviction sweep skipped — previous sweep still running");
+        return;
+      }
+      evictionInFlight = true;
+      const startedAt = Date.now();
+      try {
+        const stats = await sdk.trigger({ function_id: "mem::evict", payload: { dryRun: false } });
+        logger.info("Scheduled eviction sweep complete", {
+          stats,
+          durationMs: Date.now() - startedAt,
+        });
+      } catch (err) {
+        logger.warn("Scheduled eviction sweep failed", {
+          error: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - startedAt,
+        });
+      } finally {
+        evictionInFlight = false;
+      }
+    }, evictionIntervalMs);
+    evictionTimer.unref();
+    reportEvictionScheduled(evictionIntervalMs);
   }
 
   if (process.env.LESSON_DECAY_ENABLED !== "false") {

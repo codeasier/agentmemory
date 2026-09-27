@@ -3,7 +3,15 @@ export type McpToolDef = {
   description: string;
   inputSchema: {
     type: "object";
-    properties: Record<string, { type: string; description: string }>;
+    properties: Record<
+      string,
+      {
+        type: string;
+        description: string;
+        minimum?: number;
+        maximum?: number;
+      }
+    >;
     required?: string[];
   };
 };
@@ -332,7 +340,12 @@ export const V040_TOOLS: McpToolDef[] = [
       type: "object",
       properties: {
         operation: { type: "string", description: "Filter by operation type" },
-        limit: { type: "number", description: "Max entries (default 50)" },
+        limit: {
+          type: "number",
+          description: "Max entries (default 50; 0 uses the historical 100-row default)",
+          minimum: 0,
+          maximum: 1000,
+        },
       },
     },
   },

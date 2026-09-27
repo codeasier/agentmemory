@@ -1,0 +1,93 @@
+{
+  "schema_version": 2,
+  "issue": "https://github.com/rohitg00/agentmemory/issues/1389",
+  "recorded_at": "2026-09-26",
+  "environment": {
+    "os": "linuxmint, kernel 6.14.0-37-generic, x86_64",
+    "node": "v22.22.0",
+    "agentmemory": "0.9.29 plus fork changes",
+    "iii": "0.22.1",
+    "provider": "noop",
+    "embeddings": "disabled"
+  },
+  "workload": {
+    "sessions_per_cycle": 8,
+    "observations_per_session": 250,
+    "observations_per_cycle": 2000,
+    "session_end_every_observations": 25,
+    "payload_chars": 12000,
+    "hook_types": [
+      "post_tool_use",
+      "session_diff",
+      "llm_params",
+      "session_status",
+      "prompt_submit"
+    ],
+    "stored_per_cycle": 2000,
+    "deduplicated_per_cycle": 0,
+    "rejected_per_cycle": 0
+  },
+  "upstream_main_39658a9": {
+    "cycle_1": {
+      "max_rss_kib": 572224,
+      "settled_rss_kib": 382660,
+      "data_growth_bytes": 7860792,
+      "load_ms": 25091,
+      "total_elapsed_ms": 40091
+    },
+    "cycle_2": {
+      "max_rss_kib": 802896,
+      "settled_rss_kib": 802896,
+      "data_growth_bytes": 7753548,
+      "load_ms": 24462,
+      "total_elapsed_ms": 39462
+    },
+    "total_data_bytes": 15620366
+  },
+  "fork": {
+    "cycle_1": {
+      "max_rss_kib": 448828,
+      "settled_rss_kib": 263400,
+      "data_growth_bytes": 2299088,
+      "load_ms": 29024,
+      "total_elapsed_ms": 44024
+    },
+    "cycle_2": {
+      "max_rss_kib": 527008,
+      "settled_rss_kib": 337084,
+      "data_growth_bytes": 2240024,
+      "load_ms": 31118,
+      "total_elapsed_ms": 46118
+    },
+    "total_data_bytes": 4545132
+  },
+  "reduction_percent": {
+    "cycle_1_max_rss": 21.6,
+    "cycle_1_settled_rss": 31.2,
+    "cycle_1_data_growth": 70.8,
+    "cycle_2_max_rss": 34.4,
+    "cycle_2_settled_rss": 58.0,
+    "cycle_2_data_growth": 71.1,
+    "total_data": 70.9,
+    "second_cycle_rss_growth_reduction": 82.5,
+    "fork_load_time_increase_cycle_1": 15.7,
+    "fork_load_time_increase_cycle_2": 27.2
+  },
+  "store_composition_after_two_cycles": {
+    "upstream_state_store_bytes": 10835836,
+    "upstream_stream_store_bytes": 4782668,
+    "fork_state_store_bytes": 4543276,
+    "fork_stream_store_bytes": 0
+  },
+  "notes": [
+    "BASELINE WARNING: both sides were measured against upstream main 39658a9 with iii 0.22.1. This branch was later rebased onto tag v0.9.29 (2d38daf, iii-sdk pin 0.11.2), so the recorded baseline is no longer the branch's base and a re-measurement against v0.9.29 is outstanding. Do not quote these numbers as a v0.9.29 comparison.",
+    "Reproduction: npm run bench:memory-retention -- --url http://127.0.0.1:PORT --label LABEL --pid NODE_PID --pid III_PID --data-dir DATA_DIR",
+    "Isolated instances used ports 3311 and 3211 with separate HOME and data directories.",
+    "RSS sums the agentmemory Node process and its iii engine child; the committed harness samples /proc every 200ms and records data-dir growth.",
+    "This is a worst-case large-output synthetic/BM25/heuristic-graph workload with no LLM or embedding provider; it does not measure the full compress-embed-LLM graph path.",
+    "Upstream had not returned to baseline by the end of cycle two (settled RSS equaled its sampled maximum), so the growth reduction is the primary memory signal.",
+    "cycle_1, cycle_2, total_data_bytes and store_composition_after_two_cycles are computed by hand from the two per-run files each side emits; the harness itself only reports per-run primitives.",
+    "Structure-preserving payload truncation trades synthetic load throughput for metadata retention; the fork is 15.7% and 27.2% slower in these two cycles.",
+    "The fork still grows because iii file_based keeps a decoded in-memory representation; this change reduces client-side write amplification but does not replace the engine allocator."
+  ]
+}

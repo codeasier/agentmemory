@@ -1,6 +1,6 @@
 import type { ISdk } from "iii-sdk";
 import type { StateKV } from "../state/kv.js";
-import { KV, fingerprintId } from "../state/schema.js";
+import { KV, boundProvenance, fingerprintId } from "../state/schema.js";
 import type {
   Insight,
   GraphNode,
@@ -12,6 +12,8 @@ import type {
 } from "../types.js";
 import { recordAudit } from "./audit.js";
 import { REFLECT_SYSTEM, buildReflectPrompt } from "../prompts/reflect.js";
+
+export const INSIGHT_MAX_SOURCE_IDS = 20;
 
 interface ConceptCluster {
   concepts: string[];
@@ -291,10 +293,22 @@ export function registerReflectFunctions(
                 content,
                 confidence,
                 reinforcements: 0,
-                sourceConceptCluster: conceptNames,
-                sourceMemoryIds: cluster.factIds,
-                sourceLessonIds: cluster.lessonIds,
-                sourceCrystalIds: cluster.crystalIds,
+                sourceConceptCluster: boundProvenance(
+                  conceptNames,
+                  INSIGHT_MAX_SOURCE_IDS,
+                ),
+                sourceMemoryIds: boundProvenance(
+                  cluster.factIds || [],
+                  INSIGHT_MAX_SOURCE_IDS,
+                ),
+                sourceLessonIds: boundProvenance(
+                  cluster.lessonIds || [],
+                  INSIGHT_MAX_SOURCE_IDS,
+                ),
+                sourceCrystalIds: boundProvenance(
+                  cluster.crystalIds || [],
+                  INSIGHT_MAX_SOURCE_IDS,
+                ),
                 project: data?.project,
                 tags: conceptNames,
                 createdAt: now,

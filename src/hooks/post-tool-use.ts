@@ -51,7 +51,8 @@ async function main() {
       data: {
         tool_name: toolName,
         tool_input: toolInput,
-        tool_output: truncate(cleanOutput, 8000),
+        // The larger ingress cap lets the server preserve structured output within its 8k default.
+        tool_output: truncate(cleanOutput, 32000),
         ...(imageData ? { image_data: imageData } : {}),
       },
     }),
@@ -104,14 +105,50 @@ function extractImageData(output: unknown): { imageData: string | undefined; cle
   return { imageData: undefined, cleanOutput: output };
 }
 
+const TRUNCATION_MARKER = "...[truncated]";
+
+// Structure-preserving client-side bound. A flat JSON.stringify+slice kept
+// the wire small but destroyed object shape for outputs over the cap — the
+// largest payloads lost the very fields (file_path etc.) the server's
+// structure-preserving truncation exists to keep. Walk the value and keep as
+// many whole entries as fit the budget; strings get sliced. The server bound
+// (AGENTMEMORY_OBSERVE_TOOL_OUTPUT_CHARS) remains authoritative — this cap
+// only limits wire size and ingress parse memory.
 function truncate(value: unknown, max: number): unknown {
-  if (typeof value === "string" && value.length > max) {
-    return value.slice(0, max) + "\n[...truncated]";
+  if (typeof value === "string") {
+    if (value.length + TRUNCATION_MARKER.length <= max) return value;
+    return value.slice(0, Math.max(0, max - TRUNCATION_MARKER.length)) + TRUNCATION_MARKER;
+  }
+  if (Array.isArray(value)) {
+    if (JSON.stringify(value).length <= max) return value;
+    const bounded: unknown[] = [];
+    let remaining = Math.max(0, max - 2);
+    for (const item of value) {
+      const comma = bounded.length > 0 ? 1 : 0;
+      if (remaining <= comma) break;
+      const next = truncate(item, remaining - comma);
+      const cost = comma + JSON.stringify(next).length;
+      if (cost > remaining) break;
+      bounded.push(next);
+      remaining -= cost;
+    }
+    return bounded;
   }
   if (typeof value === "object" && value !== null) {
-    const str = JSON.stringify(value);
-    if (str.length > max) return str.slice(0, max) + "...[truncated]";
-    return value;
+    if (JSON.stringify(value).length <= max) return value;
+    const bounded: Record<string, unknown> = {};
+    let remaining = Math.max(0, max - 2);
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      const overhead =
+        (Object.keys(bounded).length > 0 ? 1 : 0) + JSON.stringify(key).length + 1;
+      if (remaining <= overhead) break;
+      const next = truncate(item, remaining - overhead);
+      const cost = overhead + JSON.stringify(next).length;
+      if (cost > remaining) break;
+      bounded[key] = next;
+      remaining -= cost;
+    }
+    return bounded;
   }
   return value;
 }

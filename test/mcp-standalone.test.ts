@@ -381,6 +381,31 @@ describe("handleToolCall", () => {
     expect(JSON.parse(huge.content[0].text).results).toHaveLength(100);
   });
 
+  it("memory_audit keeps the historical 100-row limit for explicit zero", async () => {
+    const kv = new InMemoryKV();
+    for (let i = 0; i < 120; i++) {
+      await kv.set("mem:audit", `aud_${i}`, { id: `aud_${i}` });
+    }
+
+    const zero = await handleToolCall("memory_audit", { limit: 0 }, kv);
+    const omitted = await handleToolCall("memory_audit", {}, kv);
+    expect(JSON.parse(zero.content[0].text).entries).toHaveLength(100);
+    expect(JSON.parse(omitted.content[0].text).entries).toHaveLength(50);
+  });
+
+  it("memory_audit serves up to the shared 1000-row maximum, not the generic 100 clamp", async () => {
+    const kv = new InMemoryKV();
+    for (let i = 0; i < 1200; i++) {
+      await kv.set("mem:audit", `aud_${i}`, { id: `aud_${i}` });
+    }
+
+    const exact = await handleToolCall("memory_audit", { limit: 1000 }, kv);
+    expect(JSON.parse(exact.content[0].text).entries).toHaveLength(1000);
+
+    const huge = await handleToolCall("memory_audit", { limit: 99999 }, kv);
+    expect(JSON.parse(huge.content[0].text).entries).toHaveLength(1000);
+  });
+
   it("memory_governance_delete removes memories by id array (#139)", async () => {
     const kv = new InMemoryKV();
     const a = JSON.parse(

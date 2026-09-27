@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { HybridSearch } from "../src/state/hybrid-search.js";
 import { SearchIndex } from "../src/state/search-index.js";
 import type { CompressedObservation, EmbeddingProvider } from "../src/types.js";
@@ -141,6 +141,19 @@ describe("HybridSearch", () => {
     const hybrid = new HybridSearch(bm25, null, null, kv as never);
     const results = await hybrid.search("auth");
     expect(results).toEqual([]);
+  });
+
+  it("skips graph enumeration when graph weight is zero", async () => {
+    const obs = makeObs({ id: "obs_1", sessionId: "ses_1" });
+    bm25.add(obs);
+    await kv.set("mem:obs:ses_1", "obs_1", obs);
+    const listSpy = vi.spyOn(kv, "list");
+
+    const hybrid = new HybridSearch(bm25, null, null, kv as never, 0.4, 0.6, 0);
+    const results = await hybrid.search("auth");
+
+    expect(results).toHaveLength(1);
+    expect(listSpy).not.toHaveBeenCalled();
   });
 
   it("falls back to KV.memories when an indexed entry is a saved memory (#265)", async () => {

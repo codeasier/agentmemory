@@ -13,6 +13,7 @@ import { isSlotsEnabled, isReflectEnabled } from "../functions/slots.js";
 import { renderViewerDocument } from "../viewer/document.js";
 import { getBoundViewerPort, getViewerSkipped } from "../viewer/server.js";
 import { MAX_FILES_UPPER_BOUND } from "../functions/replay.js";
+import { MAX_AUDIT_QUERY_LIMIT } from "../functions/audit.js";
 import { logger } from "../logger.js";
 import {
   isGraphExtractionEnabled,
@@ -1634,10 +1635,8 @@ export function registerApiTriggers(
                 function_id: "mem::graph-extract",
                 payload: { observations: batch },
               })) as { success?: boolean; nodesAdded?: number; edgesAdded?: number };
-              if (result?.success) {
-                totalNodes += Number(result.nodesAdded) || 0;
-                totalEdges += Number(result.edgesAdded) || 0;
-              }
+              totalNodes += Number(result?.nodesAdded) || 0;
+              totalEdges += Number(result?.edgesAdded) || 0;
               batchesRun++;
             } catch (err) {
               logger.warn("graph-build batch failed", {
@@ -1797,9 +1796,13 @@ export function registerApiTriggers(
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
       const parsedLimit = parseOptionalInt(req.query_params?.["limit"]);
+      const limit = Math.min(
+        Math.max(1, Math.floor(parsedLimit === 0 ? 100 : parsedLimit ?? 50)),
+        MAX_AUDIT_QUERY_LIMIT,
+      );
       const entries = await sdk.trigger({ function_id: "mem::audit-query", payload: {
         operation: req.query_params?.["operation"],
-        limit: parsedLimit ?? 50,
+        limit,
       } });
       return { status_code: 200, body: { entries, success: true } };
     },

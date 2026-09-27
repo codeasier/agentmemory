@@ -1176,9 +1176,9 @@ iii console --port 3114 \
   <em>Traces: her bellek işlemi için şelale / alev / hizmet dağılımı.</em>
 </p>
 
-**Trace'ler zaten açık:**
+**Trace'ler varsayılan olarak kapalı:**
 
-`iii-config.yaml` `iii-observability` worker'ı etkinleştirilmiş olarak gelir (`exporter: memory`, `sampling_ratio: 1.0`, metrikler + log'lar). Ekstra yapılandırma gerekmez; agentmemory başlar başlamaz, her bellek işlemi konsolun okuyabileceği bir trace span'ı ve yapılandırılmış bir log yayar.
+`iii-config.yaml`, `iii-observability` worker'ını devre dışı tutar; çünkü bellek içindeki trace, metrik ve log depoları uzun süreli yakalama sırasında engine'in RSS değerini önemli ölçüde artırır. iii konsolu gerektiğinde `~/.agentmemory/iii-config.yaml` içinde `enabled: true` ayarlayın; sunulan yapılandırma böylece yapılandırılmış log'ları ve örneklenmiş trace'leri (`sampling_ratio: 0.1`) kaydeder. Mevcut kurulumlar kendi kullanıcı yapılandırmasını korur; yükseltme sırasında konsola ihtiyacınız yoksa orada bir kez `enabled: false` ayarlayın.
 
 Bunun yerine Jaeger/Honeycomb/Grafana Tempo'ya dışa aktarmak isterseniz, `exporter: memory`'yi `exporter: otlp` olarak değiştirin ve collector endpoint'ini iii'nin observability dokümanlarına göre ayarlayın.
 
@@ -1198,7 +1198,7 @@ Bu da, tek bir komutun agentmemory'yi tamamen yeni bir yetenekle genişlettiği 
 iii worker add iii-pubsub          # bellek yazımlarını bağlı her örneğe fan-out et
 iii worker add iii-cron            # zamanlanmış konsolidasyon, decay süpürmeleri, snapshot rotasyonu
 iii worker add iii-queue           # embedding + sıkıştırma işleri için dayanıklı yeniden denemeler
-iii worker add iii-observability   # her bellek op'unda OTEL trace'leri (varsayılan açık)
+iii worker add iii-observability   # her bellek op'unda OTEL trace'leri (varsayılan kapalı)
 iii worker add iii-sandbox         # hatırlanan kodu izole bir microVM içinde çalıştır
 iii worker add iii-database        # SQL destekli bir state adaptörü tak
 iii worker add mcp                 # agentmemory MCP'sinin yanında genel MCP host'u
@@ -1211,7 +1211,7 @@ Her `iii worker add` agentmemory'nin zaten çalıştığı aynı engine'e yeni f
 | [`iii-pubsub`](https://workers.iii.dev/workers/iii-pubsub) | Çoklu-örnek bellek: her `remember` fan-out olur, her `search` birleşimi okur |
 | [`iii-cron`](https://workers.iii.dev/workers/iii-cron) | Zamanlanmış yaşam döngüsü: geceleri konsolidasyon, haftalık snapshot'lar, sabit bir saatte decay |
 | [`iii-queue`](https://workers.iii.dev/workers/iii-queue) | Dayanıklı yeniden denemeler: başarısız embedding + sıkıştırma işleri yeniden başlatmaya dayanır, kayıp gözlem yok |
-| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | OTEL trace'leri, metrikleri, log'ları her fonksiyonda, birinci günden itibaren `iii-config.yaml`'da bağlı |
+| [`iii-observability`](https://workers.iii.dev/workers/iii-observability) | Her fonksiyonda OTEL trace'leri, metrikler ve log'lar; `iii-config.yaml`'da mevcut ancak engine belleğini korumak için varsayılan olarak kapalı |
 | [`iii-sandbox`](https://workers.iii.dev/workers/iii-sandbox) | `memory_recall`'dan çıkan kod, shell'inizde değil, bir kullan-at VM içinde çalışır |
 | [`iii-database`](https://workers.iii.dev/workers/iii-database) | In-memory KV varsayılanlarını aştığınızda SQL destekli state adaptörü |
 | [`mcp`](https://workers.iii.dev/workers/mcp) | agentmemory'ninin yanında ekstra MCP sunucuları ayağa kaldırın, aynı engine'i paylaşın |

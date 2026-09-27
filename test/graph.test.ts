@@ -4,7 +4,11 @@ vi.mock("../src/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-import { registerGraphFunction } from "../src/functions/graph.js";
+import {
+  persistGraphDelta,
+  registerGraphFunction,
+} from "../src/functions/graph.js";
+import { MAX_PROVENANCE_IDS } from "../src/state/schema.js";
 import type {
   CompressedObservation,
   GraphNode,
@@ -114,6 +118,55 @@ describe("Graph Functions", () => {
     const edges = await kv.list<GraphEdge>("mem:graph:edges");
     expect(edges.length).toBe(1);
     expect(edges[0].type).toBe("uses");
+  });
+
+  it("persists heuristic nodes but reports an LLM failure for retry", async () => {
+    const obs = { ...testObs, concepts: ["sqlite"] };
+    mockProvider.compress.mockRejectedValueOnce(new Error("provider unavailable"));
+
+    const failed = (await sdk.trigger("mem::graph-extract", {
+      observations: [obs],
+    })) as { success: boolean; error?: string };
+    expect(failed).toMatchObject({ success: false, error: "provider unavailable" });
+    expect((await kv.list<GraphNode>("mem:graph:nodes")).some((n) => n.name === "sqlite")).toBe(true);
+
+    const retried = (await sdk.trigger("mem::graph-extract", {
+      observations: [obs],
+    })) as { success: boolean };
+    expect(retried.success).toBe(true);
+    const nodes = await kv.list<GraphNode>("mem:graph:nodes");
+    expect(nodes.filter((n) => n.name === "sqlite")).toHaveLength(1);
+    expect(nodes.some((n) => n.name === "main")).toBe(true);
+    expect(await kv.list<GraphEdge>("mem:graph:edges")).toHaveLength(1);
+  });
+
+  it("bounds graph provenance to the freshest ids", async () => {
+    const firstIds = Array.from({ length: 80 }, (_, i) => `obs_${i}`);
+    const node: GraphNode = {
+      id: "gn_bounded",
+      type: "concept",
+      name: "bounded provenance",
+      properties: {},
+      sourceObservationIds: firstIds,
+      createdAt: "2026-02-01T10:00:00Z",
+    };
+
+    await persistGraphDelta(kv as never, [node], []);
+
+    let stored = await kv.get<GraphNode>("mem:graph:nodes", node.id);
+    expect(stored?.sourceObservationIds).toHaveLength(MAX_PROVENANCE_IDS);
+    expect(stored?.sourceObservationIds.at(-1)).toBe("obs_79");
+
+    const incoming: GraphNode = {
+      ...node,
+      id: "gn_bounded_incoming",
+      sourceObservationIds: ["obs_fresh"],
+    };
+    await persistGraphDelta(kv as never, [incoming], []);
+
+    stored = await kv.get<GraphNode>("mem:graph:nodes", node.id);
+    expect(stored?.sourceObservationIds).toHaveLength(MAX_PROVENANCE_IDS);
+    expect(stored?.sourceObservationIds.at(-1)).toBe("obs_fresh");
   });
 
   it("graph-extract accepts self-closing entity tags", async () => {

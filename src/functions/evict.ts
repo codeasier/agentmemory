@@ -11,7 +11,8 @@ import { StateKV } from "../state/kv.js";
 import { isConsolidationEnabled } from "../config.js";
 import { recordAudit } from "./audit.js";
 import { deleteAccessLog } from "./access-tracker.js";
-import { logger } from "../logger.js";
+import { getSearchIndex, vectorIndexRemove, flushIndexSave } from "./search.js";
+import { bootLog, logger } from "../logger.js";
 
 interface EvictionConfig {
   staleSessionDays: number;
@@ -103,6 +104,12 @@ async function runRecoveredSessionConsolidation(sdk: ISdk): Promise<void> {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+export function reportEvictionScheduled(intervalMs: number): void {
+  const intervalMinutes = intervalMs / 60000;
+  logger.info("Eviction sweep scheduled", { intervalMinutes });
+  bootLog(`Eviction: enabled (every ${intervalMinutes}m)`);
 }
 
 export function registerEvictFunction(sdk: ISdk, kv: StateKV): void {
@@ -225,6 +232,8 @@ export function registerEvictFunction(sdk: ISdk, kv: StateKV): void {
                 });
                 continue;
               }
+              getSearchIndex().remove(o.id);
+              vectorIndexRemove(o.id);
               if (o.imageData) await decrementImageRef(kv, sdk, o.imageData);
               if (o.imageRef && o.imageRef !== o.imageData) await decrementImageRef(kv, sdk, o.imageRef);
               await recordAudit(kv, "delete", "mem::evict", [o.id], {
@@ -268,6 +277,8 @@ export function registerEvictFunction(sdk: ISdk, kv: StateKV): void {
                 });
                 continue;
               }
+              getSearchIndex().remove(o.id);
+              vectorIndexRemove(o.id);
               if (o.imageData) await decrementImageRef(kv, sdk, o.imageData);
               if (o.imageRef && o.imageRef !== o.imageData) await decrementImageRef(kv, sdk, o.imageRef);
               await recordAudit(kv, "delete", "mem::evict", [o.id], {
@@ -304,6 +315,8 @@ export function registerEvictFunction(sdk: ISdk, kv: StateKV): void {
                 });
                 continue;
               }
+              getSearchIndex().remove(mem.id);
+              vectorIndexRemove(mem.id);
               if (mem.imageRef) {
                 await decrementImageRef(kv, sdk, mem.imageRef);
               }
@@ -339,6 +352,8 @@ export function registerEvictFunction(sdk: ISdk, kv: StateKV): void {
                 });
                 continue;
               }
+              getSearchIndex().remove(mem.id);
+              vectorIndexRemove(mem.id);
               if (mem.imageRef) {
                 await decrementImageRef(kv, sdk, mem.imageRef);
               }
@@ -351,6 +366,14 @@ export function registerEvictFunction(sdk: ISdk, kv: StateKV): void {
             }
           }
         }
+      }
+
+      if (
+        !dryRun &&
+        stats.lowImportanceObs + stats.capEvictions +
+          stats.expiredMemories + stats.nonLatestMemories > 0
+      ) {
+        await flushIndexSave();
       }
 
       logger.info("Eviction complete", { stats });
