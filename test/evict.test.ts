@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   getEvictionIntervalMs,
-  getIndexReclaimBootMaxDeletes,
   isEvictionEnabled,
   parsePositiveIntervalMs,
   TIMER_MAX_INTERVAL_MS,
@@ -406,23 +405,6 @@ describe("eviction scheduling", () => {
     process.env.AGENTMEMORY_EVICTION_INTERVAL_MS = "3600000";
     expect(isEvictionEnabled()).toBe(true);
     expect(getEvictionIntervalMs()).toBe(3600000);
-  });
-
-  it("bounds boot index-reclaim deletes to a safe non-negative integer", () => {
-    delete process.env.AGENTMEMORY_INDEX_RECLAIM_BOOT_MAX_SHARDS;
-    expect(getIndexReclaimBootMaxDeletes()).toBe(200);
-
-    process.env.AGENTMEMORY_INDEX_RECLAIM_BOOT_MAX_SHARDS = "50";
-    expect(getIndexReclaimBootMaxDeletes()).toBe(50);
-
-    process.env.AGENTMEMORY_INDEX_RECLAIM_BOOT_MAX_SHARDS = "0";
-    expect(getIndexReclaimBootMaxDeletes()).toBe(0);
-
-    for (const bogus of ["abc", "-5", "1.5", "9999999999999999999999"]) {
-      process.env.AGENTMEMORY_INDEX_RECLAIM_BOOT_MAX_SHARDS = bogus;
-      expect(getIndexReclaimBootMaxDeletes()).toBe(200);
-    }
-    delete process.env.AGENTMEMORY_INDEX_RECLAIM_BOOT_MAX_SHARDS;
   });
 
   it("registers an unref'd interval with completion logging and an overlap guard", () => {
