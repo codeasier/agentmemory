@@ -11,7 +11,12 @@ describe("viewer stream event contract", () => {
     expect(end).toBeGreaterThan(start);
 
     const routed: unknown[] = [];
-    const context = { routeWsMessage: (message: unknown) => routed.push(message) };
+    const context = {
+      routeWsMessage: (message: unknown) => routed.push(message),
+      // Defined just above the extracted region in the viewer script; the
+      // live-buffer cap the sync branch slices to (upstream #1407).
+      LIVE_BUFFER_MAX: 200,
+    };
     vm.runInNewContext(html.slice(start, end), context);
     const handle = (context as typeof context & { handleStreamEvent: (msg: unknown) => void }).handleStreamEvent;
     const raw = { id: "raw_1", timestamp: "2026-01-01T00:00:00Z" };

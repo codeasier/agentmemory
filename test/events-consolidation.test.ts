@@ -10,6 +10,7 @@ vi.mock("../src/config.js", () => ({
   isConsolidationEnabled: vi.fn(() => true),
   isGraphExtractionEnabled: vi.fn(() => false),
   getConsolidationCooldownMs: vi.fn(() => 300000),
+  detectLlmProviderKind: vi.fn(() => "noop"),
   getGraphExtractionRetryMs: vi.fn(() => 300000),
   isIncrementalGraphExtractionEnabled: vi.fn(() => true),
 }));

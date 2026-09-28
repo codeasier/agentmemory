@@ -1,12 +1,14 @@
 import { TriggerAction, type ISdk } from "iii-sdk";
-import type { CompressedObservation, HookPayload, Session } from "../types.js";
+import type { CompressedObservation, HookPayload, Memory, Session } from "../types.js";
 import { KV, STREAM, fingerprintId } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
 import { isReflectEnabled } from "../functions/slots.js";
 import {
+  detectLlmProviderKind,
   getAgentId,
   getConsolidationCooldownMs,
   getGraphExtractionRetryMs,
+  isAgentScopeIsolated,
   isConsolidationEnabled,
   isIncrementalGraphExtractionEnabled,
 } from "../config.js";
@@ -261,6 +263,9 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
       if (await consolidationDue(kv)) {
         fireVoid("mem::consolidate-pipeline", { tier: "all", force: true });
         fireVoid("mem::auto-crystallize", { olderThanDays: 0 });
+        if (detectLlmProviderKind() === "llm") {
+          fireVoid("mem::skill-extract", { sessionId: data.sessionId });
+        }
       }
     }
     return summary;
@@ -296,28 +301,29 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
       old_value?: Session;
       new_value?: Session;
     }) => {
-      if (payload.event_type === "delete") return { skipped: true };
+      if (isOutOfAgentScope(payload.new_value ?? payload.old_value)) {
+        return { emitted: false };
+      }
+      if (isStateDelete(payload)) {
+        await sendViewerEvent(sdk, `session-deleted-${payload.key}-${Date.now()}`, "session.deleted", {
+          sessionId: payload.key,
+        });
+        return { emitted: true };
+      }
+      if (payload.new_value) {
+        await sendViewerEvent(sdk, `session-updated-${payload.key}-${Date.now()}`, "session.updated", {
+          session: payload.new_value,
+        });
+      }
       const oldCount = payload.old_value?.observationCount ?? 0;
       const newCount = payload.new_value?.observationCount ?? 0;
-      if (newCount <= oldCount) return { skipped: true };
+      if (newCount <= oldCount) return { emitted: Boolean(payload.new_value) };
 
-      await sdk.trigger({
-        function_id: "stream::send",
-        payload: {
-          stream_name: STREAM.name,
-          group_id: STREAM.viewerGroup,
-          // Sequence suffix: two session updates inside the same millisecond
-          // would otherwise collide on one live-event id and one drops.
-          id: `session-activity-${payload.key}-${Date.now()}-${sessionActivitySeq++}`,
-          type: "session.activity",
-          data: {
-            sessionId: payload.key,
-            observationCount: newCount,
-            delta: newCount - oldCount,
-            updatedAt: payload.new_value?.updatedAt ?? new Date().toISOString(),
-          },
-        },
-        action: TriggerAction.Void(),
+      await sendViewerEvent(sdk, `session-activity-${payload.key}-${Date.now()}-${sessionActivitySeq++}`, "session.activity", {
+        sessionId: payload.key,
+        observationCount: newCount,
+        delta: newCount - oldCount,
+        updatedAt: payload.new_value?.updatedAt ?? new Date().toISOString(),
       });
 
       return { emitted: true };
@@ -327,5 +333,70 @@ export function registerEventTriggers(sdk: ISdk, kv: StateKV): void {
     type: "state",
     function_id: "event::session::observation-count-changed",
     config: { scope: KV.sessions },
+  });
+
+  sdk.registerFunction(
+    "event::memory::changed",
+    async (payload: {
+      key: string;
+      event_type: string;
+      old_value?: Memory;
+      new_value?: Memory;
+    }) => {
+      if (isOutOfAgentScope(payload.new_value ?? payload.old_value)) {
+        return { emitted: false };
+      }
+      const deleted = isStateDelete(payload);
+      const memory = payload.new_value;
+      await sendViewerEvent(
+        sdk,
+        `memory-${deleted ? "deleted" : "updated"}-${payload.key}-${Date.now()}`,
+        deleted ? "memory.deleted" : "memory.updated",
+        deleted
+          ? { memoryId: payload.key }
+          : {
+              memoryId: payload.key,
+              type: memory?.type,
+              title: memory?.title,
+              isLatest: memory?.isLatest,
+              updatedAt: memory?.updatedAt,
+            },
+      );
+      return { emitted: true };
+    },
+  );
+  sdk.registerTrigger({
+    type: "state",
+    function_id: "event::memory::changed",
+    config: { scope: KV.memories },
+  });
+}
+
+// Engine 0.22 reports state deletes as "state:deleted" with a null
+// new_value; this line's engine 0.11.2 reports "delete". Accept both, and
+// treat a missing new_value as a delete for snapshots written before the
+// engine normalized either spelling.
+function isStateDelete(payload: { event_type: string; new_value?: unknown }): boolean {
+  return (
+    payload.event_type === "delete" ||
+    payload.event_type === "state:deleted" ||
+    !payload.new_value
+  );
+}
+
+function isOutOfAgentScope(record: { agentId?: string } | undefined): boolean {
+  return isAgentScopeIsolated() && record?.agentId !== getAgentId();
+}
+
+async function sendViewerEvent(
+  sdk: ISdk,
+  id: string,
+  type: string,
+  data: Record<string, unknown>,
+): Promise<void> {
+  await sdk.trigger({
+    function_id: "stream::send",
+    payload: { stream_name: STREAM.name, group_id: STREAM.viewerGroup, id, type, data },
+    action: TriggerAction.Void(),
   });
 }
