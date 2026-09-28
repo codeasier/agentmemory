@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **`GET /agentmemory/status` and a Health tab in the viewer (aligned with upstream #1408).** One report of what is wrong and how to fix it: the health monitor state and alerts, the LLM and embedding providers and the circuit breaker, functions failing on at least 20% of their calls (with a provider-specific fix for summarize, compress and graph extraction), observations missing from the search index (a session-count-vs-index scan shared across requests through `singleFlight`), graph snapshot age, ports, uptime, the pinned engine version and every feature flag with how to enable it. Browsers get an HTML page with no scripts and a strict CSP; everything else gets JSON (`?format=json` or `?format=html` force either). Every probe is time-boxed at 5 s so a slow store cannot hang the page. Uses the same bearer auth as the rest of the API.
 - **Scheduled eviction is available but opt-in.** `AGENTMEMORY_EVICTION_ENABLED=true` runs `mem::evict` on a timer (24 h by default) instead of requiring a manual REST call.
 - **A `bench:memory-retention` harness and historical results are available.** The committed run compares an earlier fork against upstream main `39658a9` on iii 0.22.1; it predates the rebase onto `v0.9.29` (iii 0.11.2) and does not measure this PR's improvement or throughput cost against its base. A matched run against the pinned engine is still needed. The iii `file_based` allocator baseline remains and is not eliminated by this change.
 

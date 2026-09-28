@@ -309,6 +309,25 @@ export async function indexRecords(
   return count
 }
 
+export async function findUnindexedObservations(
+  kv: StateKV,
+): Promise<{ sessions: number; missing: CompressedObservation[] }> {
+  const idx = getSearchIndex()
+  const sessions = await kv.list<Session>(KV.sessions)
+  const indexed = idx.observationCountsBySession()
+  const missing: CompressedObservation[] = []
+  for (const session of sessions) {
+    const known = session.observationCount ?? 0
+    if (known > 0 && known <= (indexed.get(session.id) ?? 0)) continue
+    const observations = await kv.list<CompressedObservation>(KV.observations(session.id))
+    for (const obs of observations) {
+      if (!obs.title || !obs.narrative || idx.has(obs.id)) continue
+      missing.push(obs)
+    }
+  }
+  return { sessions: sessions.length, missing }
+}
+
 export async function rebuildIndex(kv: StateKV): Promise<number> {
   const idx = getSearchIndex()
   idx.clear()

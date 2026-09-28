@@ -59,7 +59,7 @@ import { isFirstRun, readPrefs, resetPrefs, writePrefs } from "./cli/preferences
 import { runOnboarding } from "./cli/onboarding.js";
 import { setBootVerbose } from "./logger.js";
 import { hydrateProcessEnvFromFile } from "./config.js";
-import { VERSION } from "./version.js";
+import { III_PINNED_VERSION, VERSION } from "./version.js";
 import { getAllTools, ESSENTIAL_TOOLS } from "./mcp/tools-registry.js";
 import { knownAgents } from "./cli/connect/index.js";
 
@@ -109,7 +109,7 @@ if (args.includes("--version") || args.includes("-V")) {
 // Override env var AGENTMEMORY_III_VERSION lets users on the sandbox
 // model already point at a newer engine without us cutting a release.
 const IIPINNED_VERSION =
-  process.env["AGENTMEMORY_III_VERSION"] || "0.11.2";
+  process.env["AGENTMEMORY_III_VERSION"] || III_PINNED_VERSION;
 
 // Map Node platform/arch → the asset name iii-hq/iii ships under
 // https://github.com/iii-hq/iii/releases/download/iii/v<version>/<asset>
