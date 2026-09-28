@@ -10,6 +10,7 @@ import type { MetricsStore } from "../eval/metrics-store.js";
 import type { ResilientProvider } from "../providers/resilient.js";
 import { III_PINNED_VERSION, VERSION } from "../version.js";
 import { UNINDEXED_SCAN_REUSE_MS, evaluateStatus, prefersHtml, renderStatusHtml, singleFlight, type GraphStatsInput } from "../functions/status.js";
+import { CONSOLIDATION_COUNTS_REUSE_MS, CONSOLIDATION_LAST_RUN_KEY, PROCEDURAL_MIN_SESSIONS_PER_PATTERN, describeConsolidation, type ConsolidationRunRecord } from "../functions/consolidation-status.js";
 import { findUnindexedObservations, getSearchIndex, getVectorIndex } from "../functions/search.js";
 import { timingSafeCompare } from "../auth.js";
 import { isSlotsEnabled, isReflectEnabled } from "../functions/slots.js";
@@ -2083,6 +2084,11 @@ export function registerApiTriggers(
           : undefined;
       const offset =
         Number.isInteger(parsedOffset) && parsedOffset >= 0 ? parsedOffset : 0;
+      filtered.sort((a, b) =>
+        (b.updatedAt || b.createdAt || "").localeCompare(
+          a.updatedAt || a.createdAt || "",
+        ),
+      );
       const sliced =
         limit !== undefined ? filtered.slice(offset, offset + limit) : filtered;
 
@@ -2150,6 +2156,54 @@ export function registerApiTriggers(
     type: "http",
     function_id: "api::procedural-list",
     config: { api_path: "/agentmemory/procedural", http_method: "GET" },
+  });
+
+  const sharedConsolidationCounts = singleFlight(async () => {
+    const [summaries, memories, semantic, procedural, relations] = await Promise.all([
+      kv.list(KV.summaries).catch(() => []),
+      kv.list<import("../types.js").Memory>(KV.memories).catch(() => []),
+      kv.list(KV.semantic).catch(() => []),
+      kv.list(KV.procedural).catch(() => []),
+      kv.list(KV.relations).catch(() => []),
+    ]);
+    return {
+      summaries: summaries.length,
+      recurringPatterns: memories.filter(
+        (m) =>
+          m.isLatest &&
+          m.type === "pattern" &&
+          (m.sessionIds?.length ?? 0) >= PROCEDURAL_MIN_SESSIONS_PER_PATTERN,
+      ).length,
+      semanticFacts: semantic.length,
+      procedures: procedural.length,
+      relations: relations.length,
+    };
+  }, CONSOLIDATION_COUNTS_REUSE_MS);
+
+  sdk.registerFunction("api::consolidation-status",
+    async (req: ApiRequest): Promise<Response> => {
+      const authErr = checkAuth(req, secret);
+      if (authErr) return authErr;
+      const [counts, lastRun] = await Promise.all([
+        sharedConsolidationCounts(),
+        kv.get<ConsolidationRunRecord>(KV.config, CONSOLIDATION_LAST_RUN_KEY).catch(() => null),
+      ]);
+      return {
+        status_code: 200,
+        body: describeConsolidation({
+          now: new Date(),
+          enabled: isConsolidationEnabled(),
+          llmConfigured: detectLlmProviderKind() === "llm",
+          ...counts,
+          lastRun,
+        }),
+      };
+    },
+  );
+  sdk.registerTrigger({
+    type: "http",
+    function_id: "api::consolidation-status",
+    config: { api_path: "/agentmemory/consolidation/status", http_method: "GET" },
   });
 
   sdk.registerFunction("api::relations-list",
