@@ -31,6 +31,62 @@ function hookCwd(data) {
 	if (projectDir && projectDir.trim()) return projectDir;
 }
 //#endregion
+//#region src/hooks/truncate.ts
+const TRUNCATION_MARKER = "...[truncated]";
+function serializedLength(value) {
+	return JSON.stringify(value)?.length ?? 0;
+}
+function truncate(value, max) {
+	if (typeof value === "string") {
+		if (serializedLength(value) <= max) return value;
+		let keep = 0;
+		let hi = value.length;
+		while (keep < hi) {
+			const mid = Math.ceil((keep + hi) / 2);
+			if (serializedLength(value.slice(0, mid) + "...[truncated]") <= max) keep = mid;
+			else hi = mid - 1;
+		}
+		return value.slice(0, keep) + TRUNCATION_MARKER;
+	}
+	if (Array.isArray(value)) {
+		if (serializedLength(value) <= max) return value;
+		const bounded = [];
+		let remaining = Math.max(0, max - 2);
+		for (const item of value) {
+			const comma = bounded.length > 0 ? 1 : 0;
+			if (remaining <= comma) break;
+			const next = truncate(item, remaining - comma);
+			const cost = comma + serializedLength(next);
+			if (cost > remaining) continue;
+			bounded.push(next);
+			remaining -= cost;
+		}
+		return bounded;
+	}
+	if (typeof value === "object" && value !== null) {
+		if (serializedLength(value) <= max) return value;
+		const bounded = {};
+		let remaining = Math.max(0, max - 2);
+		const sized = Object.entries(value).map((entry) => ({
+			entry,
+			size: serializedLength(entry[1])
+		}));
+		sized.sort((a, b) => a.size - b.size);
+		for (const { entry } of sized) {
+			const [key, item] = entry;
+			const overhead = (Object.keys(bounded).length > 0 ? 1 : 0) + JSON.stringify(key).length + 1;
+			if (remaining <= overhead) continue;
+			const next = truncate(item, remaining - overhead);
+			const cost = overhead + serializedLength(next);
+			if (cost > remaining) continue;
+			bounded[key] = next;
+			remaining -= cost;
+		}
+		return bounded;
+	}
+	return value;
+}
+//#endregion
 //#region src/hooks/post-tool-use.ts
 function isSdkChildContext(payload) {
 	if (process.env["AGENTMEMORY_SDK_CHILD"] === "1") return true;
@@ -115,44 +171,6 @@ function extractImageData(output) {
 		imageData: void 0,
 		cleanOutput: output
 	};
-}
-const TRUNCATION_MARKER = "...[truncated]";
-function truncate(value, max) {
-	if (typeof value === "string") {
-		if (value.length + 14 <= max) return value;
-		return value.slice(0, Math.max(0, max - 14)) + TRUNCATION_MARKER;
-	}
-	if (Array.isArray(value)) {
-		if (JSON.stringify(value).length <= max) return value;
-		const bounded = [];
-		let remaining = Math.max(0, max - 2);
-		for (const item of value) {
-			const comma = bounded.length > 0 ? 1 : 0;
-			if (remaining <= comma) break;
-			const next = truncate(item, remaining - comma);
-			const cost = comma + JSON.stringify(next).length;
-			if (cost > remaining) break;
-			bounded.push(next);
-			remaining -= cost;
-		}
-		return bounded;
-	}
-	if (typeof value === "object" && value !== null) {
-		if (JSON.stringify(value).length <= max) return value;
-		const bounded = {};
-		let remaining = Math.max(0, max - 2);
-		for (const [key, item] of Object.entries(value)) {
-			const overhead = (Object.keys(bounded).length > 0 ? 1 : 0) + JSON.stringify(key).length + 1;
-			if (remaining <= overhead) break;
-			const next = truncate(item, remaining - overhead);
-			const cost = overhead + JSON.stringify(next).length;
-			if (cost > remaining) break;
-			bounded[key] = next;
-			remaining -= cost;
-		}
-		return bounded;
-	}
-	return value;
 }
 main().catch(() => process.exit(0));
 //#endregion
