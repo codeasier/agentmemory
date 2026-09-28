@@ -35,7 +35,17 @@ export function createEmbeddingProvider(): EmbeddingProvider | null {
     case "gemini":
       return withDimensionGuard(new GeminiEmbeddingProvider(getEnvVar("GEMINI_API_KEY")!));
     case "openai":
-      return withDimensionGuard(new OpenAIEmbeddingProvider(getEnvVar("OPENAI_API_KEY")!));
+      // The embedding endpoint can live behind a different account than
+      // OPENAI_BASE_URL (e.g. a dedicated embedding service with its own
+      // key), so the embedding-specific key must win here. Passing
+      // OPENAI_API_KEY unconditionally defeated the constructor's
+      // documented fallback chain and sent the chat key to the embedding
+      // endpoint (401).
+      return withDimensionGuard(
+        new OpenAIEmbeddingProvider(
+          getEnvVar("OPENAI_EMBEDDING_API_KEY") ?? getEnvVar("OPENAI_API_KEY"),
+        ),
+      );
     case "voyage":
       return withDimensionGuard(new VoyageEmbeddingProvider(getEnvVar("VOYAGE_API_KEY")!));
     case "cohere":
