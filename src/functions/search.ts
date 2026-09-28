@@ -305,6 +305,7 @@ export async function indexRecords(
     count++
   }
   await flush()
+  if (count > 0) scheduleIndexSave()
   return count
 }
 
