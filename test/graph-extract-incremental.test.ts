@@ -236,14 +236,70 @@ describe("graph-extract watermark never skips an observation", () => {
       await h.stop();
       expect(batches(h.trigger)).toEqual([["a"]]);
 
-      vi.advanceTimersByTime(300000);
+      // The wake-up timer retries with no further stop events at all.
       fail = false;
-      await h.stop();
+      await vi.advanceTimersByTimeAsync(300000);
       expect(batches(h.trigger)).toEqual([["a"], ["a", "b"]]);
       expect(h.session().graphExtractRetryAt).toBe(0);
       h.land(obs("c", "2026-01-01T00:00:03.000Z"));
       await h.stop();
       expect(batches(h.trigger)[2]).toEqual(["c"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-arms the wake-up after each failed retry and logs it", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:01:00.000Z"));
+      let fail = true;
+      const h = harness({ failGraphExtract: () => fail });
+      h.land(obs("a", "2026-01-01T00:00:01.000Z"));
+      await h.stop();
+      expect(batches(h.trigger)).toEqual([["a"]]);
+
+      await vi.advanceTimersByTimeAsync(300000);
+      expect(batches(h.trigger).length).toBe(2);
+      expect(h.session().graphExtractRetryAt).toBe(Date.now() + 300000);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "graph-extract retry failed",
+        expect.objectContaining({ sessionId: SID }),
+      );
+
+      fail = false;
+      await vi.advanceTimersByTimeAsync(300000);
+      expect(batches(h.trigger).length).toBe(3);
+      expect(h.session().graphExtractRetryAt).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-arms the wake-up at boot for sessions whose retry outlived a restart", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:01:00.000Z"));
+      const kv = persistentKV();
+      const { sdk, trigger } = mockSdk();
+      kv.scope("mem:sessions").set(SID, {
+        id: SID,
+        project: "p",
+        cwd: "/p",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        status: "active",
+        observationCount: 0,
+        graphExtractRetryAt: Date.now() - 1000,
+      });
+      kv.scope(`mem:obs:${SID}`).set("a", obs("a", "2026-01-01T00:00:01.000Z"));
+      registerEventTriggers(sdk as never, kv as never);
+
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(batches(trigger)).toEqual([["a"]]);
+      const session = kv.scope("mem:sessions").get(SID) as Record<string, unknown>;
+      expect(session.graphExtractRetryAt).toBe(0);
+      expect(session.graphExtractedAt).toBe("2026-01-01T00:00:01.000Z");
     } finally {
       vi.useRealTimers();
     }
@@ -354,7 +410,7 @@ describe("graph-extract watermark never skips an observation", () => {
     });
   });
 
-  it("leaves the watermark unset when the extract dispatch fails, so the next stop retries", async () => {
+  it("leaves the watermark unset when the extract dispatch fails, so the wake-up retries", async () => {
     vi.useFakeTimers();
     try {
       let refuse = true;
@@ -365,8 +421,7 @@ describe("graph-extract watermark never skips an observation", () => {
       expect(h.session().graphExtractedAt).toBeUndefined();
 
       refuse = false;
-      vi.advanceTimersByTime(300000);
-      await h.stop();
+      await vi.advanceTimersByTimeAsync(300000);
 
       expect(batches(h.trigger)[1]).toEqual(["a", "b"]);
       expect(h.session()).toMatchObject({
@@ -387,8 +442,7 @@ describe("graph-extract watermark never skips an observation", () => {
       await h.stop();
       expect(h.session().graphExtractedAt).toBeUndefined();
       fail = false;
-      vi.advanceTimersByTime(300000);
-      await h.stop();
+      await vi.advanceTimersByTimeAsync(300000);
 
       expect(batches(h.trigger)).toEqual([["a"], ["a"]]);
       expect(h.session().graphExtractedAt).toBe("2026-01-01T00:00:01.000Z");
