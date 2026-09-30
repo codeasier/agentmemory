@@ -1889,6 +1889,12 @@ function portInUseDiagnostic(port: number): string {
     : `  lsof -i :${port}   # or: ss -tlnp | grep :${port}`;
 }
 
+function agentmemoryReadyTimeoutMs(): number {
+  const raw = process.env.AGENTMEMORY_READY_TIMEOUT_MS;
+  const parsed = raw ? Number(raw) : 15_000;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 15_000;
+}
+
 async function waitForAgentmemoryReady(timeoutMs: number): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -2044,8 +2050,8 @@ async function main() {
     if (detected === IIPINNED_VERSION) {
       adoptRunningEngine();
       await startWorkerForEngineState();
-      if (!(await waitForAgentmemoryReady(15000))) {
-        p.log.error("agentmemory worker did not become ready within 15s.");
+      if (!(await waitForAgentmemoryReady(agentmemoryReadyTimeoutMs()))) {
+        p.log.error(`agentmemory worker did not become ready within ${agentmemoryReadyTimeoutMs() / 1000}s.`);
         process.exit(1);
       }
       const consoleState = await ensureIiiConsole();
@@ -2156,8 +2162,8 @@ async function main() {
 
   s.stop(c.ok("iii-engine is ready"));
   await startWorkerForEngineState();
-  if (!(await waitForAgentmemoryReady(15000))) {
-    p.log.error("agentmemory worker did not become ready within 15s.");
+  if (!(await waitForAgentmemoryReady(agentmemoryReadyTimeoutMs()))) {
+    p.log.error(`agentmemory worker did not become ready within ${agentmemoryReadyTimeoutMs() / 1000}s.`);
     process.exit(1);
   }
   const consoleState = await ensureIiiConsole();
