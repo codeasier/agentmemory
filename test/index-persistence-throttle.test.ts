@@ -199,7 +199,7 @@ const cleanLeg = {
 };
 
 function persistenceStatus(vector: typeof cleanLeg | null, pendingChanges = 0) {
-  return { saveIntervalMs: 600_000, saving: false, buckets: 256, pendingChanges, vector, vectorCountShortfall: null };
+  return { saveIntervalMs: 600_000, saving: false, buckets: 256, pendingChanges, orphanDeletes: 0, vector, vectorCountShortfall: null };
 }
 
 describe("status reports index persistence", () => {
