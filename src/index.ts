@@ -458,10 +458,12 @@ async function main() {
       bootLog(
         `Loaded persisted vector index (${vectorIndex.size} vectors)`,
       );
-      if (vectorIndex.pendingChanges > 0 || indexPersistence.status().orphanDeletes > 0) {
-        void indexPersistence.save().catch((err) => {
-          console.warn(`[agentmemory] Failed to flush vector index after load:`, err);
-        });
+      if (indexPersistence.status().orphanDeletes > 0) {
+        setTimeout(() => {
+          indexPersistence.save().catch((err) => {
+            console.warn(`[agentmemory] Failed to flush orphan vector rows:`, err);
+          });
+        }, 60_000).unref();
       }
     }
   }
