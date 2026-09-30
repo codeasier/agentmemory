@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { VectorIndex } from "../src/state/vector-index.js";
+import {
+  VectorIndex,
+  float32ToBase64,
+  float32ToFloat16Base64,
+  base64ToFloat16AsFloat32,
+  decodePersistedEmbedding,
+} from "../src/state/vector-index.js";
 
 describe("VectorIndex", () => {
   let index: VectorIndex;
@@ -114,5 +120,29 @@ describe("VectorIndex", () => {
     const results = restored.search(new Float32Array([2, 3, 4, 5]), 1);
     expect(results[0].obsId).toBe("obs_slice");
     expect(results[0].score).toBeCloseTo(1.0, 4);
+  });
+
+  it("float16 codec round-trips dimension and cosine identity", () => {
+    const src = new Float32Array([0.1, -0.2, 0.3, 1, 0, -1, 1e-5, 3.14159]);
+    const decoded = base64ToFloat16AsFloat32(float32ToFloat16Base64(src));
+    expect(decoded.length).toBe(src.length);
+    let dot = 0;
+    let na = 0;
+    let nb = 0;
+    for (let i = 0; i < src.length; i++) {
+      dot += src[i] * decoded[i];
+      na += src[i] * src[i];
+      nb += decoded[i] * decoded[i];
+    }
+    expect(dot / (Math.sqrt(na) * Math.sqrt(nb))).toBeGreaterThan(0.999);
+  });
+
+  it("decodePersistedEmbedding keeps v3 float32 bytes and reads f16 via c=f16", () => {
+    const src = new Float32Array([0.25, -0.5, 0.75]);
+    const f32 = decodePersistedEmbedding(float32ToBase64(src));
+    expect(Array.from(f32)).toEqual(Array.from(src));
+    const f16 = decodePersistedEmbedding(float32ToFloat16Base64(src), "f16");
+    expect(f16.length).toBe(3);
+    expect(f16[0]).toBeCloseTo(0.25, 3);
   });
 });

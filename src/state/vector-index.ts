@@ -20,6 +20,97 @@ export function base64ToFloat32(b64: string): Float32Array {
   );
 }
 
+// Node 22 has no DataView.setFloat16. IEEE-754 binary16, little-endian,
+// matching the evidence script (numpy float16) well enough that a 1024-d
+// cosine round-trip stays at 1.0 on real embeddings.
+function float32ToFloat16Bits(value: number): number {
+  const f32 = new Float32Array(1);
+  const u32 = new Uint32Array(f32.buffer);
+  f32[0] = value;
+  const x = u32[0];
+  const sign = (x >>> 16) & 0x8000;
+  const exp = (x >>> 23) & 0xff;
+  const frac = x & 0x7fffff;
+  if (exp === 0xff) {
+    return sign | 0x7c00 | (frac ? 0x200 : 0);
+  }
+  if (exp === 0) {
+    if (frac === 0) return sign;
+    let m = frac;
+    let e = -14;
+    while ((m & 0x800000) === 0) {
+      m <<= 1;
+      e -= 1;
+    }
+    m &= 0x7fffff;
+    if (e < -24) return sign;
+    if (e < -14) {
+      const shift = -14 - e;
+      return sign | (m >> (13 + shift));
+    }
+    return sign | (((e + 15) << 10) + (m >> 13));
+  }
+  const unb = exp - 127;
+  if (unb > 15) return sign | 0x7c00;
+  if (unb < -14) {
+    if (unb < -24) return sign;
+    const shift = -14 - unb;
+    return sign | (((frac | 0x800000) >> (13 + shift)) & 0x3ff);
+  }
+  return sign | (((unb + 15) << 10) + (frac >> 13) + ((frac >> 12) & 1));
+}
+
+function float16BitsToFloat32(h: number): number {
+  const sign = (h & 0x8000) << 16;
+  const exp = (h >> 10) & 0x1f;
+  const frac = h & 0x3ff;
+  let bits: number;
+  if (exp === 0) {
+    if (frac === 0) {
+      bits = sign;
+    } else {
+      let m = frac;
+      let e = -14;
+      while ((m & 0x400) === 0) {
+        m <<= 1;
+        e -= 1;
+      }
+      m &= 0x3ff;
+      bits = sign | ((e + 127) << 23) | (m << 13);
+    }
+  } else if (exp === 0x1f) {
+    bits = sign | 0x7f800000 | (frac << 13);
+  } else {
+    bits = sign | ((exp - 15 + 127) << 23) | (frac << 13);
+  }
+  const u32 = new Uint32Array(1);
+  u32[0] = bits;
+  return new Float32Array(u32.buffer)[0];
+}
+
+export function float32ToFloat16Base64(arr: Float32Array): string {
+  const out = Buffer.allocUnsafe(arr.length * 2);
+  for (let i = 0; i < arr.length; i++) {
+    out.writeUInt16LE(float32ToFloat16Bits(arr[i]), i * 2);
+  }
+  return out.toString("base64");
+}
+
+export function base64ToFloat16AsFloat32(b64: string): Float32Array {
+  const buf = Buffer.from(b64, "base64");
+  const n = buf.byteLength >> 1;
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = float16BitsToFloat32(buf.readUInt16LE(i * 2));
+  }
+  return out;
+}
+
+export function decodePersistedEmbedding(b64: string, codec?: string): Float32Array {
+  if (codec === "f16") return base64ToFloat16AsFloat32(b64);
+  return base64ToFloat32(b64);
+}
+
 function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length) return 0;
   let dot = 0;
