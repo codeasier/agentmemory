@@ -1626,7 +1626,7 @@ Create `~/.agentmemory/.env`:
 | `POST` | `/agentmemory/forget` | Delete observations |
 | `POST` | `/agentmemory/enrich` | File context + memories + bugs |
 | `GET` | `/agentmemory/profile` | Project profile |
-| `GET` | `/agentmemory/export` | Export all data |
+| `GET` | `/agentmemory/export` | Export all data (`?maxSessions=&offset=` pages sessions; `?collection=&offset=&limit=` pages one collection, `observations` also needs `?sessionId=`) |
 | `POST` | `/agentmemory/import` | Import from JSON |
 | `POST` | `/agentmemory/graph/query` | Knowledge graph query |
 | `POST` | `/agentmemory/team/share` | Share with team |

@@ -58,9 +58,120 @@ async function runChunked<T>(
   }
 }
 
+// Non-session collections addressable through the collection paging
+// path. Keys are the ExportData field names so a paged backup can be
+// reassembled by direct field mapping.
+const EXPORT_COLLECTION_SCOPES: Record<string, string> = {
+  memories: KV.memories,
+  summaries: KV.summaries,
+  profiles: KV.profiles,
+  graphNodes: KV.graphNodes,
+  graphEdges: KV.graphEdges,
+  semanticMemories: KV.semantic,
+  proceduralMemories: KV.procedural,
+  actions: KV.actions,
+  actionEdges: KV.actionEdges,
+  routines: KV.routines,
+  signals: KV.signals,
+  checkpoints: KV.checkpoints,
+  sentinels: KV.sentinels,
+  sketches: KV.sketches,
+  crystals: KV.crystals,
+  facets: KV.facets,
+  lessons: KV.lessons,
+  insights: KV.insights,
+  accessLogs: KV.accessLog,
+};
+
+const EXPORT_PAGE_DEFAULT_LIMIT = 1000;
+const EXPORT_PAGE_MAX_LIMIT = 10_000;
+
+// One page of exactly one collection. The default export path pages only
+// sessions via maxSessions/offset and loads every other collection
+// wholesale, so a large store cannot squeeze under the transport frame
+// cap no matter how small maxSessions is. Collection mode lets a caller
+// (the nightly backup) walk each collection in bounded pages and
+// reassemble an import-compatible document locally. Offset paging is
+// stable as long as no writes land mid-walk; the backup runs after the
+// nightly consolidation finishes, when the store is quiet.
+async function exportCollectionPage(
+  kv: StateKV,
+  collection: string,
+  data?: { offset?: number; limit?: number; sessionId?: string },
+) {
+  const rawLimit = Number(data?.limit);
+  const limit =
+    Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(Math.floor(rawLimit), EXPORT_PAGE_MAX_LIMIT)
+      : EXPORT_PAGE_DEFAULT_LIMIT;
+  const rawOffset = Number(data?.offset);
+  const offset =
+    Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : 0;
+
+  let scope: string;
+  if (collection === "sessions") {
+    scope = KV.sessions;
+  } else if (collection === "observations") {
+    const sessionId =
+      typeof data?.sessionId === "string" ? data.sessionId.trim() : "";
+    if (!sessionId) {
+      return {
+        success: false,
+        error: "collection=observations requires a non-empty sessionId",
+      };
+    }
+    scope = KV.observations(sessionId);
+  } else if (Object.prototype.hasOwnProperty.call(EXPORT_COLLECTION_SCOPES, collection)) {
+    scope = EXPORT_COLLECTION_SCOPES[collection]!;
+  } else {
+    return {
+      success: false,
+      error: `Unknown collection '${collection}'; supported: sessions, observations (requires sessionId), ${Object.keys(EXPORT_COLLECTION_SCOPES).join(", ")}`,
+    };
+  }
+
+  const items = await kv.list(scope);
+  const page = items.slice(offset, offset + limit);
+  const result = {
+    version: VERSION,
+    exportedAt: new Date().toISOString(),
+    collection,
+    items: page,
+    pagination: {
+      offset,
+      limit,
+      total: items.length,
+      hasMore: offset + limit < items.length,
+    },
+  };
+  const oversized = checkPayloadFrameSize(
+    result,
+    `reduce ?limit for the '${collection}' page`,
+  );
+  if (oversized) {
+    logger.warn("Collection export page exceeds transport frame limit", {
+      collection,
+      bytes: oversized.bytes,
+    });
+    return oversized;
+  }
+  logger.info("Collection export page", {
+    collection,
+    offset,
+    items: page.length,
+    total: items.length,
+  });
+  return result;
+}
+
 export function registerExportImportFunction(sdk: ISdk, kv: StateKV): void {
-  sdk.registerFunction("mem::export", 
-    async (data?: { maxSessions?: number; offset?: number }) => {
+  sdk.registerFunction("mem::export",
+    async (data?: { maxSessions?: number; offset?: number; collection?: string; limit?: number; sessionId?: string }) => {
+      const rawCollection =
+        typeof data?.collection === "string" ? data.collection.trim() : "";
+      if (rawCollection) {
+        return exportCollectionPage(kv, rawCollection, data);
+      }
       const rawMax = Number(data?.maxSessions);
       const maxSessions = Number.isFinite(rawMax) && rawMax > 0 ? Math.min(Math.floor(rawMax), 1000) : undefined;
       const rawOffset = Number(data?.offset);
@@ -184,11 +295,12 @@ export function registerExportImportFunction(sdk: ISdk, kv: StateKV): void {
         summaries: summaries.length,
       });
 
-      // Only session collections page on ?maxSessions/?offset, so a large
-      // store can exceed the transport cap even at ?maxSessions=1.
+      // The default path still loads every non-session collection
+      // wholesale, so it can exceed the transport cap even at
+      // ?maxSessions=1.
       const oversized = checkPayloadFrameSize(
         exportData,
-        "narrow the range with ?maxSessions / ?offset, or export fewer collections; the non-session collections (memories, graph, semantic, actions, lessons, ...) are not yet paginated",
+        "narrow the range with ?maxSessions / ?offset, or page a single collection with ?collection / ?offset / ?limit (the nightly backup path)",
       );
       if (oversized) {
         logger.warn("Export exceeds transport frame limit", {
