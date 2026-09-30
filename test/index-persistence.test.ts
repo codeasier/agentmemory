@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IndexPersistence, vectorBucketScope } from "../src/state/index-persistence.js";
 import { SearchIndex } from "../src/state/search-index.js";
-import { VectorIndex } from "../src/state/vector-index.js";
+import { VectorIndex, float32ToBase64 } from "../src/state/vector-index.js";
 import type { CompressedObservation } from "../src/types.js";
 
 const INDEX_SCOPE = "mem:index:bm25";
@@ -104,7 +104,10 @@ function expectSameVectors(actual: VectorIndex | null, expected: VectorIndex): v
   for (const [id, entry] of expected.entries()) {
     const loaded = actual!.get(id);
     expect(loaded?.sessionId).toBe(entry.sessionId);
-    expect(Array.from(loaded!.embedding)).toEqual(Array.from(entry.embedding));
+    expect(loaded!.embedding.length).toBe(entry.embedding.length);
+    for (let i = 0; i < entry.embedding.length; i++) {
+      expect(loaded!.embedding[i]).toBeCloseTo(entry.embedding[i], 3);
+    }
   }
 }
 
@@ -127,12 +130,43 @@ describe("IndexPersistence bucketed vector storage", () => {
     expect(kv.store.get(vectorBucketScope(0))?.has("obs_b")).toBe(true);
     expect(kv.store.get(vectorBucketScope(1))?.has("obs_c")).toBe(true);
     const meta = await kv.get<{ v: number; bucketCount: number; count: number }>(INDEX_SCOPE, META_KEY);
-    expect(meta).toMatchObject({ v: 3, bucketCount: 2, count: 3 });
+    expect(meta).toMatchObject({ v: 4, bucketCount: 2, count: 3 });
 
     const loaded = await new IndexPersistence(kv as never, new VectorIndex(), { bucketSize: 2 }).load();
     expect(loaded.state).toBe("buckets");
     expectSameVectors(loaded.vector, vector);
     expect(loaded.vector!.pendingChanges).toBe(0);
+    const stored = kv.store.get(vectorBucketScope(0))!.get("obs_a") as { e: string; c?: string };
+    expect(stored.c).toBe("f16");
+    expect(Buffer.from(stored.e, "base64").byteLength).toBe(3 * 2);
+  });
+
+  it("loads v3 float32 rows and marks them dirty so the next save rewrites float16", async () => {
+    const embedding = vec([0.1, 0.2, 0.3]);
+    await kv.set(vectorBucketScope(0), "obs_legacy", {
+      id: "obs_legacy",
+      s: "ses_legacy",
+      e: float32ToBase64(embedding),
+    });
+    await kv.set(INDEX_SCOPE, META_KEY, { v: 3, bucketCount: 1, savedAt: "2026-09-01T00:00:00.000Z", count: 1 });
+
+    const live = new VectorIndex();
+    const persistence = new IndexPersistence(kv as never, live, { bucketSize: 16 });
+    const loaded = await persistence.load();
+    expect(loaded.state).toBe("buckets");
+    expect(loaded.vector!.size).toBe(1);
+    expect(loaded.vector!.get("obs_legacy")!.embedding.length).toBe(3);
+    expect(loaded.vector!.get("obs_legacy")!.embedding[0]).toBeCloseTo(0.1, 3);
+    expect(loaded.vector!.pendingChanges).toBe(1);
+
+    live.restoreFrom(loaded.vector!);
+    expect(live.pendingChanges).toBe(1);
+    await persistence.save();
+    const stored = kv.store.get(vectorBucketScope(0))!.get("obs_legacy") as { c?: string; e: string };
+    expect(stored.c).toBe("f16");
+    expect(Buffer.from(stored.e, "base64").byteLength).toBe(3 * 2);
+    const meta = await kv.get<{ v: number }>(INDEX_SCOPE, META_KEY);
+    expect(meta?.v).toBe(4);
   });
 
   it("writes only the bucket entry of a single added vector", async () => {
