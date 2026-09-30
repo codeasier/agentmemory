@@ -35,6 +35,14 @@ describe("memories + export pagination (#544)", () => {
     );
   });
 
+  it("api::export passes through collection + limit + sessionId query params", () => {
+    expect(api).toMatch(/query_params\?\.\["collection"\]/);
+    expect(api).toMatch(/payload\.collection = rawCollection\.trim\(\)/);
+    expect(api).toMatch(/query_params\?\.\["limit"\]/);
+    expect(api).toMatch(/payload\.limit = n/);
+    expect(api).toMatch(/payload\.sessionId = rawSessionId\.trim\(\)/);
+  });
+
   it("viewer dashboard counts memories via count=true and the tab caps its fetch", () => {
     const viewer = readFileSync("src/viewer/index.html", "utf-8");
     expect(viewer).toMatch(/memories\?latest=true&count=true/);

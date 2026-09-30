@@ -1426,9 +1426,21 @@ export function registerApiTriggers(
       // real corpus (40 sessions × 34K observations × 8K memories) hit the
       // iii engine invocation timeout and `agentmemory status` reported 0.
       // Pass through the query-string pagination so callers can chunk.
+      // ?collection / ?limit / ?sessionId page one collection at a time
+      // (backup path); collection wins over maxSessions when both are
+      // present.
       const rawMax = req.query_params?.["maxSessions"];
       const rawOffset = req.query_params?.["offset"];
-      const payload: { maxSessions?: number; offset?: number } = {};
+      const rawCollection = req.query_params?.["collection"];
+      const rawLimit = req.query_params?.["limit"];
+      const rawSessionId = req.query_params?.["sessionId"];
+      const payload: {
+        maxSessions?: number;
+        offset?: number;
+        collection?: string;
+        limit?: number;
+        sessionId?: string;
+      } = {};
       if (typeof rawMax === "string") {
         const n = Number(rawMax);
         if (Number.isInteger(n) && n > 0) payload.maxSessions = n;
@@ -1436,6 +1448,16 @@ export function registerApiTriggers(
       if (typeof rawOffset === "string") {
         const n = Number(rawOffset);
         if (Number.isInteger(n) && n >= 0) payload.offset = n;
+      }
+      if (typeof rawCollection === "string" && rawCollection.trim()) {
+        payload.collection = rawCollection.trim();
+      }
+      if (typeof rawLimit === "string") {
+        const n = Number(rawLimit);
+        if (Number.isInteger(n) && n > 0) payload.limit = n;
+      }
+      if (typeof rawSessionId === "string" && rawSessionId.trim()) {
+        payload.sessionId = rawSessionId.trim();
       }
       const result = await sdk.trigger({
         function_id: "mem::export",

@@ -309,3 +309,112 @@ describe("Export/Import Functions", () => {
     expect(result.error).toContain("Unsupported export version");
   });
 });
+
+describe("export collection paging", () => {
+  let sdk: ReturnType<typeof mockSdk>;
+  let kv: ReturnType<typeof mockKV>;
+
+  beforeEach(async () => {
+    sdk = mockSdk();
+    kv = mockKV();
+    registerExportImportFunction(sdk as never, kv as never);
+
+    await kv.set("mem:sessions", "ses_1", testSession);
+    await kv.set("mem:sessions", "ses_2", { ...testSession, id: "ses_2" });
+    await kv.set("mem:obs:ses_1", "obs_1", testObs);
+    await kv.set("mem:obs:ses_1", "obs_2", { ...testObs, id: "obs_2" });
+    await kv.set("mem:obs:ses_1", "obs_3", { ...testObs, id: "obs_3" });
+    for (let i = 0; i < 5; i++) {
+      await kv.set("mem:semantic", `sem_${i}`, {
+        id: `sem_${i}`,
+        content: `semantic ${i}`,
+      });
+    }
+  });
+
+  it("pages a non-session collection with offset/limit", async () => {
+    const page1 = (await sdk.trigger("mem::export", {
+      collection: "semanticMemories",
+      offset: 0,
+      limit: 2,
+    })) as { items: unknown[]; pagination: { total: number; hasMore: boolean } };
+
+    expect(page1.items.length).toBe(2);
+    expect(page1.pagination.total).toBe(5);
+    expect(page1.pagination.hasMore).toBe(true);
+
+    const page3 = (await sdk.trigger("mem::export", {
+      collection: "semanticMemories",
+      offset: 4,
+      limit: 2,
+    })) as { items: unknown[]; pagination: { hasMore: boolean } };
+
+    expect(page3.items.length).toBe(1);
+    expect(page3.pagination.hasMore).toBe(false);
+  });
+
+  it("pages the sessions collection itself", async () => {
+    const page = (await sdk.trigger("mem::export", {
+      collection: "sessions",
+      offset: 1,
+      limit: 1,
+    })) as { collection: string; items: { id: string }[]; pagination: { total: number } };
+
+    expect(page.collection).toBe("sessions");
+    expect(page.items.length).toBe(1);
+    expect(page.pagination.total).toBe(2);
+  });
+
+  it("pages observations per session via sessionId", async () => {
+    const page = (await sdk.trigger("mem::export", {
+      collection: "observations",
+      sessionId: "ses_1",
+      offset: 1,
+      limit: 5,
+    })) as { items: { id: string }[]; pagination: { total: number; hasMore: boolean } };
+
+    expect(page.items.map((o) => o.id)).toEqual(["obs_2", "obs_3"]);
+    expect(page.pagination.total).toBe(3);
+    expect(page.pagination.hasMore).toBe(false);
+  });
+
+  it("rejects observations without a sessionId", async () => {
+    const result = (await sdk.trigger("mem::export", {
+      collection: "observations",
+    })) as { success: boolean; error: string };
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("sessionId");
+  });
+
+  it("rejects an unknown collection and lists the supported ones", async () => {
+    const result = (await sdk.trigger("mem::export", {
+      collection: "bogus",
+    })) as { success: boolean; error: string };
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Unknown collection 'bogus'");
+    expect(result.error).toContain("semanticMemories");
+    expect(result.error).toContain("observations");
+  });
+
+  it("collection pages carry the export version for reassembly", async () => {
+    const page = (await sdk.trigger("mem::export", {
+      collection: "memories",
+    })) as { version: string; exportedAt: string; items: unknown[] };
+
+    expect(page.version).toBe(VERSION);
+    expect(page.exportedAt).toBeDefined();
+    expect(page.items.length).toBe(0);
+  });
+
+  it("collection mode wins over maxSessions when both are present", async () => {
+    const page = (await sdk.trigger("mem::export", {
+      collection: "sessions",
+      maxSessions: 1,
+    })) as { collection: string; items: unknown[]; pagination: { total: number } };
+
+    expect(page.collection).toBe("sessions");
+    expect(page.pagination.total).toBe(2);
+  });
+});
