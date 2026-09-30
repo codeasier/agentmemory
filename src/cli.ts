@@ -71,7 +71,8 @@ import {
   clearPersistedBuiltinConfig,
   renderEngineConfig,
 } from "./cli/engine-config.js";
-import { SHUTDOWN_WORKER_GRACE_MS } from "./shutdown.js";
+import { SHUTDOWN_ENGINE_GRACE_MS, SHUTDOWN_WORKER_GRACE_MS } from "./shutdown.js";
+import { captureRunningWorkerProof, workerShutdownSucceeded } from "./worker-shutdown-proof.js";
 import { consoleArgs, defaultConsolePort, parseConsoleArgs } from "./cli/console.js";
 import { processStatIsRunning } from "./cli/process-state.js";
 import { renderSplash } from "./cli/splash.js";
@@ -2385,7 +2386,7 @@ function buildDoctorEffects(): DoctorEffects {
         for (const pid of portPids) candidates.add(pid);
         let allStopped = true;
         for (const pid of candidates) {
-          const ok = await signalAndWait(pid, "SIGTERM", 3000);
+          const ok = await signalAndWait(pid, "SIGTERM", SHUTDOWN_ENGINE_GRACE_MS);
           if (!ok) allStopped = false;
         }
         clearEnginePidfile();
@@ -2947,7 +2948,7 @@ async function startServerForDemo(): Promise<() => Promise<void>> {
     const pidfilePid = readEnginePidfile();
     if (pidfilePid) pids.add(pidfilePid);
     for (const pid of pids) {
-      await signalAndWait(pid, "SIGTERM", 3000).catch(() => {});
+      await signalAndWait(pid, "SIGTERM", SHUTDOWN_ENGINE_GRACE_MS).catch(() => {});
     }
     clearEnginePidfile();
     clearEngineState();
@@ -3222,15 +3223,8 @@ async function signalAndWait(
     await new Promise((r) => setTimeout(r, 200));
   }
   if (!pidAlive(pid)) return true;
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code === "ESRCH") return true;
-    vlog(`SIGKILL ${pid}: ${err instanceof Error ? err.message : String(err)}`);
-    return false;
-  }
-  await new Promise((r) => setTimeout(r, 200));
-  return !pidAlive(pid);
+  p.log.error(`Pid ${pid} did not exit after ${timeoutMs}ms; preserving it for investigation rather than forcing a potentially incomplete flush.`);
+  return false;
 }
 
 // Shared worker-reap: SIGTERM with a grace window sized for the worker's
@@ -3242,6 +3236,20 @@ async function stopWorkerPid(pid: number): Promise<boolean> {
   const ok = await signalAndWait(pid, "SIGTERM", SHUTDOWN_WORKER_GRACE_MS);
   s.stop(ok ? `Stopped worker pid ${pid}` : `Failed to stop worker pid ${pid}`);
   return ok;
+}
+
+async function stopNativeWorkerPid(pid: number): Promise<boolean> {
+  const proof = pidAlive(pid) ? captureRunningWorkerProof(pid) : null;
+  if (!proof) {
+    p.log.error(`Worker pid ${pid} has no matching running shutdown proof. Refusing to signal it or stop the engine.`);
+    return false;
+  }
+  if (!(await stopWorkerPid(pid))) return false;
+  if (!workerShutdownSucceeded(proof)) {
+    p.log.error(`Worker pid ${pid} exited without a matching successful shutdown proof. The engine and lifecycle state were preserved.`);
+    return false;
+  }
+  return true;
 }
 
 type NativeRemovalStopResult =
@@ -3266,11 +3274,14 @@ async function stopNativeEngineForRemoval(): Promise<NativeRemovalStopResult> {
     };
   }
 
+  if (!workerPid && enginePids.size > 0) {
+    return { ok: false, reason: "worker PID is missing; no engine or files were removed" };
+  }
   if (workerPid) {
-    if (!(await stopWorkerPid(workerPid))) {
+    if (!(await stopNativeWorkerPid(workerPid))) {
       return {
         ok: false,
-        reason: `worker pid ${workerPid} could not be stopped; no engine or files were removed`,
+        reason: `worker pid ${workerPid} has no successful shutdown proof; no engine or files were removed`,
       };
     }
     clearWorkerPidfile();
@@ -3279,7 +3290,7 @@ async function stopNativeEngineForRemoval(): Promise<NativeRemovalStopResult> {
   for (const pid of enginePids) {
     const s = p.spinner();
     s.start(`Stopping iii-engine (pid ${pid})...`);
-    const ok = await signalAndWait(pid, "SIGTERM", 3000);
+    const ok = await signalAndWait(pid, "SIGTERM", SHUTDOWN_ENGINE_GRACE_MS);
     s.stop(ok ? `Stopped pid ${pid}` : `Failed to stop pid ${pid}`);
     if (!ok) {
       return {
@@ -3377,7 +3388,7 @@ async function stopDockerEngine(
       inspection.status === "running" &&
       !runCommand(
         dockerBin,
-        ["stop", "--time", "10", inspection.containerId],
+        ["stop", "--time", String(SHUTDOWN_ENGINE_GRACE_MS / 1000), inspection.containerId],
         { label: `Stopping preserved Docker container ${inspection.containerId}` },
       )
     ) {
@@ -3473,6 +3484,10 @@ async function runStop(): Promise<void> {
 
   if (!running) {
     if (portPids.length === 0 && pidfilePid === null && workerPid === null) {
+      if (state?.kind === "native") {
+        p.log.error("Native engine state remains but no worker PID is available to prove shutdown. Lifecycle state was preserved.");
+        process.exit(1);
+      }
       clearEnginePidfile();
       clearEngineState();
       clearWorkerPidfile();
@@ -3482,17 +3497,13 @@ async function runStop(): Promise<void> {
     if (workerPid !== null && portPids.length === 0 && pidfilePid === null) {
       // Engine already gone but worker is lingering — reap it directly
       // instead of preserving for manual cleanup.
-      const s = p.spinner();
-      s.start(`Stopping orphaned agentmemory worker (pid ${workerPid})...`);
-      const ok = await signalAndWait(workerPid, "SIGTERM", SHUTDOWN_WORKER_GRACE_MS);
-      s.stop(ok ? `Stopped worker pid ${workerPid}` : `Failed to stop worker pid ${workerPid}`);
+      if (!(await stopNativeWorkerPid(workerPid))) {
+        p.log.error(`Worker pid ${workerPid} did not complete shutdown. Lifecycle state was preserved.`);
+        process.exit(1);
+      }
       clearEnginePidfile();
       clearEngineState();
       clearWorkerPidfile();
-      if (!ok) {
-        p.log.error(`Worker pid ${workerPid} survived SIGKILL. Investigate with \`ps\`.`);
-        process.exit(1);
-      }
       p.outro("Stopped orphaned worker. Check shutdown warnings for incomplete writes.");
       return;
     }
@@ -3535,19 +3546,25 @@ async function runStop(): Promise<void> {
   // the engine-down branch could also reap orphans.
   const workerCandidates = new Set<number>();
   if (workerPid) workerCandidates.add(workerPid);
+  if (workerCandidates.size === 0) {
+    p.log.error("Worker PID is missing; cannot prove native worker shutdown. Engine and lifecycle state were preserved.");
+    process.exit(1);
+  }
 
-  if (candidates.size === 0 && workerCandidates.size === 0) {
+  if (candidates.size === 0) {
     p.log.error(
       `Could not locate engine process. Try:\n  ${IS_WINDOWS ? "netstat -ano | findstr :" + port : "lsof -i :" + port + " -t | xargs kill -9"}`,
     );
     process.exit(1);
   }
 
-  let allStopped = true;
   // Keep the engine alive while the worker submits vector rows and metadata.
   // State acknowledgements are not a disk barrier; allow the full worker budget.
   for (const pid of workerCandidates) {
-    if (!(await stopWorkerPid(pid))) allStopped = false;
+    if (!(await stopNativeWorkerPid(pid))) {
+      p.log.error("Worker shutdown was not proven successful. Engine and lifecycle state were preserved.");
+      process.exit(1);
+    }
   }
   const skippedForeign: Array<{ pid: number; comm: string }> = [];
   for (const pid of candidates) {
@@ -3562,14 +3579,14 @@ async function runStop(): Promise<void> {
     }
     const s = p.spinner();
     s.start(`Stopping iii-engine (pid ${pid})...`);
-    const ok = await signalAndWait(pid, "SIGTERM", 3000);
+    const ok = await signalAndWait(pid, "SIGTERM", SHUTDOWN_ENGINE_GRACE_MS);
     s.stop(ok ? `Stopped pid ${pid}` : `Failed to stop pid ${pid}`);
-    if (!ok) allStopped = false;
+    if (!ok) {
+      p.log.error("Engine shutdown timed out. Lifecycle state was preserved.");
+      process.exit(1);
+    }
   }
 
-  clearEnginePidfile();
-  clearEngineState();
-  clearWorkerPidfile();
   if (skippedForeign.length > 0) {
     const list = skippedForeign
       .map((sf) => `  pid ${sf.pid}  ${sf.comm}`)
@@ -3579,10 +3596,9 @@ async function runStop(): Promise<void> {
     );
     process.exit(1);
   }
-  if (!allStopped) {
-    p.log.error("One or more processes survived SIGKILL. Investigate with `ps`.");
-    process.exit(1);
-  }
+  clearEnginePidfile();
+  clearEngineState();
+  clearWorkerPidfile();
   p.outro("Stopped. Check shutdown warnings for incomplete writes; restart with: npx @agentmemory/agentmemory");
 }
 

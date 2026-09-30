@@ -298,11 +298,12 @@ describe("Docker lifecycle discovery", () => {
 });
 
 describe("native removal shutdown", () => {
-  it("stops the worker first and aborts all cleanup when it cannot stop", () => {
+  it("refuses a stale worker PID without signaling or removing files", () => {
     const result = runNativeRemoveWithWorkerFailure();
 
     expect(result.result.status).toBe(1);
-    expect(result.killLog).toBe("424242:SIGTERM\n");
+    expect(result.killLog).toBe("424242:0\n");
+    expect(`${result.result.stdout}\n${result.result.stderr}`).toContain("no matching running shutdown proof");
     expect(existsSync(result.workerPidfile)).toBe(true);
     expect(existsSync(result.enginePidfile)).toBe(true);
     expect(existsSync(result.engineState)).toBe(true);

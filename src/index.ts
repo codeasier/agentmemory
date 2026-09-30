@@ -116,7 +116,8 @@ import { VERSION } from "./version.js";
 import { bootLog, logger } from "./logger.js";
 import { parsePositiveIntervalMs } from "./config.js";
 import { runtimeMetadataPath } from "./runtime-paths.js";
-import { mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { startWorkerShutdownProof, completeWorkerShutdownProof } from "./worker-shutdown-proof.js";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 function workerPidfilePath(): string {
@@ -131,12 +132,6 @@ function writeWorkerPidfile(): void {
     // best-effort; stop still has the engine pidfile + port scan fallback
   }
 }
-function clearWorkerPidfile(): void {
-  try {
-    unlinkSync(workerPidfilePath());
-  } catch {}
-}
-
 function hasGetMeter(
   sdk: unknown,
 ): sdk is { getMeter: (name: string) => unknown } {
@@ -228,6 +223,7 @@ async function main() {
     },
   });
 
+  const shutdownProof = startWorkerShutdownProof();
   writeWorkerPidfile();
 
   const kv = new StateKV(sdk);
@@ -673,7 +669,6 @@ async function main() {
       console.warn(
         `[agentmemory] Shutdown still blocked after ${SHUTDOWN_HARD_EXIT_MS}ms; exiting now.`,
       );
-      clearWorkerPidfile();
       process.exit(1);
     }, SHUTDOWN_HARD_EXIT_MS);
     hardExit.unref();
@@ -712,7 +707,12 @@ async function main() {
       console.warn(`[agentmemory] SDK shutdown failed:`, err);
     }
     clearTimeout(hardExit);
-    clearWorkerPidfile();
+    try {
+      completeWorkerShutdownProof(shutdownProof, exitCode === 0 ? "success" : "failure");
+    } catch (err) {
+      exitCode = 1;
+      console.error("[agentmemory] Could not write worker shutdown proof:", err);
+    }
     process.exit(exitCode);
   };
   process.on("SIGINT", shutdown);

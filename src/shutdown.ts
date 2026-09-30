@@ -4,6 +4,7 @@ export const SHUTDOWN_SDK_TIMEOUT_MS = 10000;
 // Reserve time to reap the engine before systemd's 120s stop deadline.
 export const SHUTDOWN_HARD_EXIT_MS = 100000;
 export const SHUTDOWN_WORKER_GRACE_MS = SHUTDOWN_HARD_EXIT_MS + 1000;
+export const SHUTDOWN_ENGINE_GRACE_MS = 15000;
 
 interface ShutdownIndexPersistence {
   save(): Promise<void>;

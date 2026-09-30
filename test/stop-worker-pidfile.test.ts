@@ -11,7 +11,9 @@ describe("stop reaps the worker process (#640, #474)", () => {
     expect(source).toMatch(/workerPidfilePath\(\)/);
     expect(source).toMatch(/"worker\.pid"/);
     expect(source).toMatch(/writeWorkerPidfile\(\)/);
-    expect(source).toMatch(/clearWorkerPidfile\(\)/);
+    expect(source).toContain("startWorkerShutdownProof()");
+    expect(source).toContain("completeWorkerShutdownProof(shutdownProof");
+    expect(source).not.toContain("clearWorkerPidfile()");
   });
 
   it("src/cli.ts reads worker.pid in runStop and signals it on stop", () => {
@@ -41,8 +43,10 @@ describe("stop reaps the worker process (#640, #474)", () => {
 
     expect(body.indexOf("inspectOwnedDockerEngine(state)"))
       .toBeLessThan(body.indexOf("readWorkerPidfile()"));
+    const stopAt = body.indexOf('["stop", "--time", String(SHUTDOWN_ENGINE_GRACE_MS / 1000), inspection.containerId]');
+    expect(stopAt).toBeGreaterThanOrEqual(0);
     expect(body.indexOf("readWorkerPidfile()"))
-      .toBeLessThan(body.indexOf('["stop", "--time", "10", inspection.containerId]'));
+      .toBeLessThan(stopAt);
     expect(body).toContain("persistDockerInspection(state, inspection)");
     expect(body).toContain("writeEngineState(resolvedState)");
   });
