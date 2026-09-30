@@ -171,7 +171,7 @@ and atomic-write failure. After these changes, `npm test` passed 1,944 tests
 with one skip, and `npm run build` passed. TypeScript's existing baseline
 diagnostics remain; the migration added no normalized diagnostics.
 
-## Eventual cutover requirements
+## Cutover requirements
 
 1. Keep the old engine, full application build and dependency tree unchanged.
 2. Stage the new engine under a separate, versioned path. Require exact binary
@@ -189,6 +189,8 @@ diagnostics remain; the migration added no normalized diagnostics.
    verify all listeners released. Fail closed on forced kill, save error, or
    timeout; budget more than 120 seconds for the old worst case. Take a
    consistent offline data/config/unit backup only after both processes exit.
+   Suspending systemd timers alone does not quiesce hooks or the daemon's
+   internal auto-forget and audit-sweep timers.
 5. Switch the complete application tree and matching SDK together with the
    side-by-side engine. Preserve the production config's intended bind policy
    and absolute state paths; a bundled config defaults to loopback instead.
@@ -202,3 +204,66 @@ still live under HOME, and production custom YAML can contain absolute state
 paths that the renderer does not rewrite. Force the bundled config and a private
 HOME when running copied-store tests. Never share production pidfiles/configs or
 use generic process-name kills for cleanup.
+
+## Local cutover evidence, 2026-10-01
+
+The exact old worker and iii 0.11.2 engine were stopped under a temporary
+systemd `ExecStop` supervisor, rehearsed first with a separate dummy service.
+It kept the old engine alive for 16 seconds after worker exit (more than two
+5-second save periods), checked the shutdown journal and released listeners,
+and did not use the old CLI's 5-second forced worker kill. With health, backup,
+and consolidation timers suspended, a stopped-store archive preserved the
+complete data root, old HOME metadata/config/engine, full old application tree,
+units and helper scripts. The private recovery directory is
+`/home/codeasier/backups/agentmemory-iii022-38KwQq2C`; its
+`offline-complete.tar` has SHA-256
+`8b4b72ee5a4f6f5de1d21d3f802e9df58670f8962b60929900658d4e5f6f45a4`.
+All 1,105 archived state files were compared against the stopped source.
+The original unit files and recorded timer state are preserved separately.
+
+A second isolated smoke test started from the **current offline production
+snapshot**, not an earlier live copy. The patched pair retained 10 sampled
+memory hashes, three closed-session ID/content sets, all 100 accepted canary
+observations, a new memory, a deleted memory, REST search, MCP recall, and an
+unchanged 42,509-vector count across complete engine stop/restart. On
+production, systemd's new `ExecStartPre` verified the exact application and
+engine hashes, SDK/helper versions, worker trace opt-out, and the unchanged
+`0.0.0.0:3111` REST bind and absolute state/stream paths. A subsequent real
+systemd restart preserved **21/21 accepted new-production observation IDs and
+content hashes**, historical witnesses and at least 42,429 vectors without a
+vector checkpoint shortfall. The old private binary and application tree remain
+untouched. The patched engine is side-by-side, not an in-place replacement.
+
+**Unresolved older warm-index discrepancy:** Immediately before old shutdown,
+the old live process reported 36,819 BM25 documents / 36,563 indexed
+observations. Both old 0.11.2 and patched 0.22.1 cold-boot the same offline
+snapshot at 35,928 / 35,672 (a difference of 891 observation-side *warm*
+index entries; memory documents stay at 256). The pre-cutover 42,408 vectors
+survived. All 2,562 `Observation captured` IDs found in the last old worker
+PID's journal were individually found in the new KV, and there were no
+persisted `mem:obs:` scope files without a listed session. This rules out a
+new-engine-only reconstruction regression and verifies the latest old worker's
+accepted writes, but **does not prove** whether the older 891 warm-only entries
+were stale index ghosts or previously unflushed historical observations. Do
+not synthesize entries, claim full-corpus integrity, or turn on extra eviction
+to reconcile a counter. The offline archive and ID-reconciliation evidence
+are retained; cold-boot counts are the comparison baseline.
+
+A rollback must stop/reap the patched pair, quarantine post-cutover data without
+deleting it, and restore the original archive and unit into verified empty
+targets before booting the old engine. Writes accepted after the archive need
+replay; reverting to the pre-cutover snapshot alone would lose them. The old
+pair could read *a disposable copy* of new-written data, but that is not a
+license to boot it directly over a modified live store. Engine exit status is
+still not observable to the separate CLI; for this manual cutover, the cold
+restart and read-only witnesses supplement (not replace) the graceful-shutdown
+implementation. Neither this evidence nor the patch promises crash/power-loss
+fsync durability.
+
+All three previously active user timers were restored. The missed 03:00 nightly
+consolidation ran once and completed successfully before the backup timer was
+resumed; the next backup is due at approximately 03:35 CST and can restart the
+service. At final verification the new service was active with all timer jobs
+idle, and its cgroup `MemoryCurrent` was about 1.75 GiB under the unchanged
+`MemoryHigh=2560M` and `MemoryMax=3G`. This single sample does not prove a
+memory optimization over the old engine or a long-run leak fix.
