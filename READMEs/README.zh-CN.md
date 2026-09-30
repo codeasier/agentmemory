@@ -463,7 +463,7 @@ npx @agentmemory/agentmemory
 
 <h2 id="quick-start"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-quickstart.svg"><img src="../assets/tags/section-quickstart.svg" alt="Quick Start" height="32" /></picture></h2>
 
-兼容性:此版本面向 `iii-sdk` 0.22.1,并将 iii-engine 固定在 v0.22.1。
+兼容性:此版本面向 `iii-sdk` 0.22.1,并将 iii-engine 固定在 v0.22.1。切换已有服务前,请先查看 [fork 迁移验证与重启持久化门禁](../docs/iii-022-migration-validation.md)。
 
 ### 30 秒体验
 
@@ -1176,6 +1176,8 @@ iii console --port 3114 \
 **Traces 默认关闭:**
 
 `iii-config.yaml` 默认禁用 `iii-observability` worker,因为其内存中的 trace、指标和日志存储会在持续捕获时显著增加引擎 RSS。需要使用 iii 控制台时,在 `~/.agentmemory/iii-config.yaml` 中设置 `enabled: true`;届时会记录结构化日志与采样的 trace(`sampling_ratio: 0.1`)。已有安装会保留自己的配置文件,升级后如不需要控制台,请手动把其中的 `enabled` 改为 `false`。
+
+Node SDK 的调用载荷追踪独立于引擎可观测性。在 **worker 环境**中设置 `III_DISABLE_TRACE_PAYLOADS=true`,才能跳过函数输入和结果的递归复制与 JSON 序列化。关闭 `iii-observability` 或引擎使用遥测不会关闭这部分工作。`OTEL_ENABLED=false` 可额外关闭 worker OpenTelemetry,但不能替代载荷开关;载荷大小上限也是先完整序列化,再截断。
 
 如果要改为导出到 Jaeger/Honeycomb/Grafana Tempo,把 `exporter: memory` 改为 `exporter: otlp` 并按 iii 的可观测性文档设置收集器端点。
 

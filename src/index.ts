@@ -26,7 +26,14 @@ import { StateKV } from "./state/kv.js";
 import { VectorIndex } from "./state/vector-index.js";
 import { HybridSearch } from "./state/hybrid-search.js";
 import { IndexPersistence } from "./state/index-persistence.js";
-import { SHUTDOWN_FLUSH_TIMEOUT_MS, SHUTDOWN_HARD_EXIT_MS, settleWithin } from "./shutdown.js";
+import {
+  SHUTDOWN_FLUSH_TIMEOUT_MS,
+  SHUTDOWN_HARD_EXIT_MS,
+  SHUTDOWN_SDK_TIMEOUT_MS,
+  SHUTDOWN_VIEWER_TIMEOUT_MS,
+  flushIndexOnShutdown,
+  settleWithin,
+} from "./shutdown.js";
 import { registerPrivacyFunction } from "./functions/privacy.js";
 import { registerObserveFunction } from "./functions/observe.js";
 import { registerImageQuotaCleanup } from "./functions/image-quota-cleanup.js";
@@ -657,7 +664,10 @@ async function main() {
     bootLog(`Auto-consolidation: enabled (every ${consolidationIntervalMs / 60000}m)`);
   }
 
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`\n[agentmemory] Shutting down...`);
     const hardExit = setTimeout(() => {
       console.warn(
@@ -670,25 +680,40 @@ async function main() {
     healthMonitor.stop();
     dedupMap.stop();
     indexPersistence.stop();
+    let exitCode = 0;
     const viewerClosed = new Promise<void>((resolve) =>
       viewerServer.close(() => resolve()),
     );
     viewerServer.closeAllConnections();
-    await viewerClosed;
-    const flushed = await settleWithin(
-      indexPersistence.save(),
-      SHUTDOWN_FLUSH_TIMEOUT_MS,
-    );
-    if (!flushed) {
+    if (!(await settleWithin(viewerClosed, SHUTDOWN_VIEWER_TIMEOUT_MS))) {
+      exitCode = 1;
       console.warn(
-        `[agentmemory] Search index flush did not finish within ${SHUTDOWN_FLUSH_TIMEOUT_MS}ms; the engine is probably gone. Observations are already in the engine's state store and the index reconciles them on the next boot.`,
+        `[agentmemory] Viewer shutdown did not finish within ${SHUTDOWN_VIEWER_TIMEOUT_MS}ms; continuing the final index flush.`,
       );
     }
-    await settleWithin(sdk.shutdown(), SHUTDOWN_FLUSH_TIMEOUT_MS).catch((err) => {
+    const flush = await flushIndexOnShutdown(indexPersistence);
+    if (flush.status !== "saved") {
+      exitCode = 1;
+      console.warn(
+        flush.status === "timed-out"
+          ? `[agentmemory] Search index flush did not finish within ${SHUTDOWN_FLUSH_TIMEOUT_MS}ms. Unsaved vectors may be missing after restart; automatic vector recovery is not guaranteed.`
+          : `[agentmemory] Search index flush failed: ${flush.error}. Pending vector writes may not be durable.`,
+      );
+    }
+    try {
+      if (!(await settleWithin(sdk.shutdown(), SHUTDOWN_SDK_TIMEOUT_MS))) {
+        exitCode = 1;
+        console.warn(
+          `[agentmemory] SDK shutdown did not finish within ${SHUTDOWN_SDK_TIMEOUT_MS}ms.`,
+        );
+      }
+    } catch (err) {
+      exitCode = 1;
       console.warn(`[agentmemory] SDK shutdown failed:`, err);
-    });
+    }
+    clearTimeout(hardExit);
     clearWorkerPidfile();
-    process.exit(0);
+    process.exit(exitCode);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

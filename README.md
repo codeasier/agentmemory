@@ -496,7 +496,7 @@ None of these auto-capture from coding-agent hooks, ship a local-first viewer, o
 
 <h2 id="quick-start"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/tags/light/section-quickstart.svg"><img src="assets/tags/section-quickstart.svg" alt="Quick Start" height="32" /></picture></h2>
 
-Compatibility: this release targets `iii-sdk` 0.22.1 and pins iii-engine v0.22.1.
+Compatibility: this release targets `iii-sdk` 0.22.1 and pins iii-engine v0.22.1. See the [fork migration validation and restart-persistence gate](docs/iii-022-migration-validation.md) before switching an existing service.
 
 ### Try it in 30 seconds
 
@@ -1253,6 +1253,8 @@ The same thing by hand, useful when `agentmemory` is not on PATH:
 **Traces are off by default:**
 
 `iii-config.yaml` keeps the `iii-observability` worker disabled because its in-memory trace, metric, and log stores materially increase engine RSS under sustained capture. Set `enabled: true` in `~/.agentmemory/iii-config.yaml` when you need the iii console; the shipped block then records structured logs and sampled traces (`sampling_ratio: 0.1`). Existing installs keep their user config, so set `enabled: false` there once when upgrading if you do not need the console.
+
+The Node SDK's invocation payload tracing is separate from engine observability. Set `III_DISABLE_TRACE_PAYLOADS=true` in the **worker environment** to skip recursive copying and JSON serialization of function inputs and results. Disabling `iii-observability` or engine usage telemetry does not disable that work. `OTEL_ENABLED=false` optionally disables worker OpenTelemetry, but does not replace the payload opt-out. A payload size cap truncates only after the full payload has been serialized.
 
 If you export to Jaeger/Honeycomb/Grafana Tempo instead, change `exporter: memory` to `exporter: otlp` and set the collector endpoint per iii's observability docs.
 
