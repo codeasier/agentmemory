@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IndexPersistence, vectorBucketScope } from "../src/state/index-persistence.js";
 import { SearchIndex } from "../src/state/search-index.js";
-import { VectorIndex, float32ToBase64 } from "../src/state/vector-index.js";
+import { VectorIndex, float32ToBase64, float32ToFloat16Base64 } from "../src/state/vector-index.js";
 import type { CompressedObservation } from "../src/types.js";
 
 const INDEX_SCOPE = "mem:index:bm25";
@@ -167,6 +167,41 @@ describe("IndexPersistence bucketed vector storage", () => {
     expect(Buffer.from(stored.e, "base64").byteLength).toBe(3 * 2);
     const meta = await kv.get<{ v: number }>(INDEX_SCOPE, META_KEY);
     expect(meta?.v).toBe(4);
+  });
+
+  it("deletes duplicate untagged rows and keeps the f16 copy", async () => {
+    const embedding = vec([0.1, 0.2, 0.3]);
+    await kv.set(vectorBucketScope(0), "obs_dup", {
+      id: "obs_dup",
+      s: "ses_old",
+      e: float32ToBase64(embedding),
+    });
+    await kv.set(vectorBucketScope(1), "obs_dup", {
+      id: "obs_dup",
+      s: "ses_new",
+      e: float32ToFloat16Base64(embedding),
+      c: "f16",
+    });
+    await kv.set(INDEX_SCOPE, META_KEY, {
+      v: 4,
+      bucketCount: 2,
+      savedAt: "2026-09-30T00:00:00.000Z",
+      count: 1,
+    });
+
+    const live = new VectorIndex();
+    const persistence = new IndexPersistence(kv as never, live, { bucketSize: 16 });
+    const loaded = await persistence.load();
+    expect(loaded.vector!.size).toBe(1);
+    expect(persistence.status().orphanDeletes).toBe(1);
+    expect(loaded.vector!.pendingChanges).toBe(0);
+
+    live.restoreFrom(loaded.vector!);
+    await persistence.save();
+    expect(kv.store.get(vectorBucketScope(0))?.has("obs_dup")).toBe(false);
+    const kept = kv.store.get(vectorBucketScope(1))?.get("obs_dup") as { c?: string };
+    expect(kept?.c).toBe("f16");
+    expect(persistence.status().orphanDeletes).toBe(0);
   });
 
   it("writes only the bucket entry of a single added vector", async () => {

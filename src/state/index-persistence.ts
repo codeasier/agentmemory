@@ -71,6 +71,7 @@ export interface IndexPersistenceStatus {
   saving: boolean;
   buckets: number;
   pendingChanges: number;
+  orphanDeletes: number;
   vector: IndexLegStatus | null;
   vectorCountShortfall: VectorCountShortfall | null;
 }
@@ -171,6 +172,7 @@ export class IndexPersistence {
   private highestBucket = 0;
   private hasOpenBucket = false;
   private vectorCountShortfall: VectorCountShortfall | null = null;
+  private orphanDeletes: Array<{ bucket: number; id: string }> = [];
 
   constructor(
     private kv: StateKV,
@@ -225,6 +227,7 @@ export class IndexPersistence {
       saving: this.running !== null,
       buckets: this.bucketCountInUse(),
       pendingChanges: this.vector?.pendingChanges ?? 0,
+      orphanDeletes: this.orphanDeletes.length,
       vector: this.vector ? { ...this.leg } : null,
       vectorCountShortfall: this.vectorCountShortfall,
     };
@@ -339,8 +342,24 @@ export class IndexPersistence {
 
   private async writeChanges(vector: VectorIndex): Promise<void> {
     const changes = vector.takeChanges();
-    if (changes.size === 0 && this.metaWritten) return;
+    if (changes.size === 0 && this.orphanDeletes.length === 0 && this.metaWritten) return;
     const failed = new Map<string, boolean>();
+    const orphans = this.orphanDeletes;
+    this.orphanDeletes = [];
+    const orphanFailures = await inBatches(orphans, WRITE_CONCURRENCY, async ({ bucket, id }) => {
+      try {
+        await this.kv.delete(vectorBucketScope(bucket), id);
+      } catch (err) {
+        this.orphanDeletes.push({ bucket, id });
+        throw err;
+      }
+    });
+    if (orphanFailures.length > 0) {
+      vector.returnChanges(changes);
+      throw new Error(
+        `${orphanFailures.length} of ${orphans.length} orphan vector deletes failed: ${errorMessage(orphanFailures[0])}`,
+      );
+    }
     const failures = await inBatches([...changes], WRITE_CONCURRENCY, async ([id, present]) => {
       const entry = present ? vector.get(id) : undefined;
       try {
@@ -383,25 +402,21 @@ export class IndexPersistence {
     const loaded = new VectorIndex();
     const bucketOfId = new Map<string, number>();
     const bucketCounts = new Map<number, number>();
+    const listed = new Map<number, unknown[]>();
     const bucketIds = Array.from({ length: bucketCount }, (_, bucket) => bucket);
-    let sawLegacyCodec = false;
-    const failures = await inBatches(bucketIds, LOAD_CONCURRENCY, async (bucket) => {
-      const rows = await this.kv.list<unknown>(vectorBucketScope(bucket));
-      let count = 0;
-      for (const row of rows) {
-        if (!isPersistedVector(row)) continue;
-        try {
-          const codec = row.c === "f16" ? "f16" : undefined;
-          if (codec !== "f16") sawLegacyCodec = true;
-          loaded.loadPersisted(row.id, row.s, decodePersistedEmbedding(row.e, codec));
-        } catch {
-          continue;
-        }
-        bucketOfId.set(row.id, bucket);
-        count++;
+    const failures: unknown[] = [];
+    for (let offset = 0; offset < bucketIds.length; offset += LOAD_CONCURRENCY) {
+      const chunk = bucketIds.slice(offset, offset + LOAD_CONCURRENCY);
+      const results = await Promise.allSettled(
+        chunk.map(async (bucket) => {
+          const rows = await this.kv.list<unknown>(vectorBucketScope(bucket));
+          listed.set(bucket, rows);
+        }),
+      );
+      for (const result of results) {
+        if (result.status === "rejected") failures.push(result.reason);
       }
-      if (count > 0) bucketCounts.set(bucket, count);
-    });
+    }
     if (failures.length > 0) {
       logger.warn("index persistence: vector bucket read failed", {
         failed: failures.length,
@@ -409,10 +424,52 @@ export class IndexPersistence {
       });
       return null;
     }
+
+    type Candidate = { bucket: number; row: PersistedVector; codec: "f16" | undefined };
+    const chosen = new Map<string, Candidate>();
+    const orphans: Array<{ bucket: number; id: string }> = [];
+    for (const bucket of bucketIds) {
+      for (const raw of listed.get(bucket) ?? []) {
+        if (!isPersistedVector(raw)) continue;
+        const codec = raw.c === "f16" ? "f16" : undefined;
+        const prev = chosen.get(raw.id);
+        if (!prev) {
+          chosen.set(raw.id, { bucket, row: raw, codec });
+          continue;
+        }
+        const takeNew = codec === "f16" && prev.codec !== "f16";
+        if (takeNew) {
+          orphans.push({ bucket: prev.bucket, id: raw.id });
+          chosen.set(raw.id, { bucket, row: raw, codec });
+        } else {
+          orphans.push({ bucket, id: raw.id });
+        }
+      }
+    }
+
+    let sawLegacyCodec = false;
+    for (const [id, cand] of chosen) {
+      try {
+        if (cand.codec !== "f16") sawLegacyCodec = true;
+        loaded.loadPersisted(id, cand.row.s, decodePersistedEmbedding(cand.row.e, cand.codec));
+      } catch {
+        continue;
+      }
+      bucketOfId.set(id, cand.bucket);
+      bucketCounts.set(cand.bucket, (bucketCounts.get(cand.bucket) ?? 0) + 1);
+    }
+
     this.bucketOfId = bucketOfId;
     this.bucketCounts = bucketCounts;
     this.highestBucket = bucketCount > 0 ? bucketCount - 1 : 0;
     this.hasOpenBucket = bucketCount > 0;
+    this.orphanDeletes = orphans;
+    if (orphans.length > 0) {
+      logger.info("index persistence: duplicate vector rows queued for delete", {
+        orphans: orphans.length,
+        kept: loaded.size,
+      });
+    }
     if (metaVersion === 3 || sawLegacyCodec) {
       loaded.markAllChanged();
     }

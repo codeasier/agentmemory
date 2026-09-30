@@ -110,7 +110,7 @@ describe("evaluateStatus", () => {
 
   it("reports a vector count shortfall from the last save as a warning", () => {
     const report = evaluateStatus(
-      inputs({ indexPersistence: { saveIntervalMs: 600_000, saving: false, buckets: 3, pendingChanges: 0, vector: null, vectorCountShortfall: { expected: 100, loaded: 40 } } }),
+      inputs({ indexPersistence: { saveIntervalMs: 600_000, saving: false, buckets: 3, pendingChanges: 0, orphanDeletes: 0, vector: null, vectorCountShortfall: { expected: 100, loaded: 40 } } }),
     );
     expect(report.status).toBe("warn");
     const problem = report.problems.find((p) => p.code === "index-vector-count-shortfall");
