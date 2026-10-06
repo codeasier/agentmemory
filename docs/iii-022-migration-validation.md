@@ -231,6 +231,39 @@ over the staged path, point `EXPECTED_ENGINE_SHA` in `prestart_new.py` back at
 `0151039e…`, and restart the unit. The store format is unchanged in both
 directions; only the resident-memory behaviour differs.
 
+### Open follow-ups
+
+Recorded, not yet done:
+
+- The agentmemory-side mitigation upstream shipped alongside this fix
+  (`b3d6cf5` / PR #1457: `MALLOC_ARENA_MAX=2` on the engine child, and the
+  file-store cadence 5000 ms → 2000 ms) is still unported. The engine now trims
+  on its own, so this is optional; it would shrink the sawtooth amplitude rather
+  than the floor.
+- The Node worker is the next ceiling at ~920 MB — 278 MB of V8 heap plus 246 MB
+  of `external`, which is the 1024-dimension vector index held as float32. It
+  grows with the corpus (5,327 vectors in one 40-minute window) and no engine
+  change touches it.
+- Four open upstream issues keep raising the floor and are worth reviewing in
+  turn: [#1443](https://github.com/rohitg00/agentmemory/issues/1443) unbounded
+  graph provenance with no observation GC, [#1360](https://github.com/rohitg00/agentmemory/issues/1360)
+  bloated `sourceSessionIds` / `sourceMemoryIds`,
+  [#1115](https://github.com/rohitg00/agentmemory/issues/1115) orphaned index
+  generations — this store still carries a whole stale `bm25:idx_mul7vqxw_…`
+  generation, 17 files and 35.8 MB beside the live 96-bucket set — and
+  [#1450](https://github.com/rohitg00/agentmemory/issues/1450) graph retrieval
+  reading the whole graph per call. Upstream `main` also has #1454/#1455
+  (bounded and compacted graph provenance), #1452, #1446, #1419, #1420 and #1418
+  that this tree does not.
+- Regression watch: `node_agentmemory_process_rss_bytes{exported_role="engine"}`
+  should keep sawtoothing rather than climbing. `AgentmemoryMemoryPressure`
+  (>0.9 of MemoryHigh for 10 m) and `AgentmemoryIndexGrowthFast`
+  (6-hour index derivative above 100 MB/day) are the existing tripwires.
+
+The local record, including the A/B harness and the fuller narrative, is at
+`/home/codeasier/agentmemory-engine-ab/` and in the operations knowledge base
+note `2026-10-06-agentmemory-内存治本修复`.
+
 ## Application migration safeguards
 
 ### Avoid trace payload copies
