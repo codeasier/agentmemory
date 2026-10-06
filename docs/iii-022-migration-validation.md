@@ -202,11 +202,20 @@ stop matched exactly after it: 50 memory content hashes, and three sessions at
 500/500/431 observations with identical ID and content hashes.
 
 Engine RSS fell from 1547 MB — the pre-fix level at the same corpus — to a
-942–1064 MB sawtooth that keeps returning to ~950 MB, and the cgroup from
-2345 MB to 2066–2187 MB. The sawtooth is the trim working: memory is handed back
-after each churn burst instead of ratcheting. The Node worker's own footprint
-(~900 MB, dominated by the 53k-vector index in `external`) is unchanged by this
-patch and remains the next ceiling.
+sawtooth between roughly 950 and 1120 MB that keeps returning to its floor after
+every churn burst, and the cgroup from 2345 MB to about 2100 MB. The sawtooth is
+the trim working: memory is handed back instead of ratcheting.
+
+The residual drift is data, not retention. Over a 40-minute window under live
+traffic the store grew 255→275 MB and the index 174→189 MB (5,327 new vectors),
+and the engine's floor drifted about +28 MB with it — while the cgroup over the
+same window *fell* 2,299→2,141 MB. For comparison, the same workload before the
+patch added roughly 400 MB/hour to the cgroup and never came down. At ~30 MB/hour
+of store growth the resident floor now tracks the corpus rather than the
+operation count.
+
+The Node worker's own footprint (~920 MB, dominated by the 55k-vector index in
+`external`) is unchanged by this patch and remains the next ceiling.
 
 Monitoring caveat, fixed in the same pass: `agentmemory-cgroup-watch.sh` matched
 the engine with `pgrep -f 'bin/iii --config'`, which stopped matching when the
