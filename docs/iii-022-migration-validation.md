@@ -213,7 +213,14 @@ the engine with `pgrep -f 'bin/iii --config'`, which stopped matching when the
 0.22.1 layout moved the binary from `<prefix>/bin/iii` to `<prefix>/iii`.
 `node_agentmemory_process_rss_bytes{role="engine"}` was therefore absent from
 2026-10-01 02:18 onward, leaving the growing process unwatched. It now matches
-the process name with the legacy pattern as a fallback.
+the process name with the legacy pattern as a fallback, and the installed copy
+under `/usr/local/lib/codeasier-monitoring/` was refreshed from the repository.
+
+Rollback is a file swap, not a store restore: install
+`/home/codeasier/backups/engine-iii-0.22.1/iii-0.22.1+agentmemory.1-0151039e`
+over the staged path, point `EXPECTED_ENGINE_SHA` in `prestart_new.py` back at
+`0151039e…`, and restart the unit. The store format is unchanged in both
+directions; only the resident-memory behaviour differs.
 
 ## Application migration safeguards
 
