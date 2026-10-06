@@ -83,7 +83,9 @@ separate: they require appropriate write-through/journaling and fsync semantics.
 ### Locally patched engine
 
 The separate source tree at `/home/codeasier/Projects/iii-agentmemory-0.22.1`
-starts at the exact official 0.22.1 tag; commit `5ace0eb` contains the patch.
+starts at the exact official 0.22.1 tag; commit `5ace0eb` contains the
+durability patch and commit `6ee52b21e` the memory patch (see
+"Memory growth after the cutover" below).
 It retains the public package version and file encoding but reports
 `0.22.1+agentmemory.1` via `iii --version`.
 Its persistent state and stream adapters quiesce accepted mutations and await
@@ -94,12 +96,17 @@ The StreamWorker also propagates the active adapter's shutdown error.
 
 The final release binary staged at
 `/home/codeasier/.local/lib/agentmemory-iii-0.22.1-agentmemory.1/iii`
-has SHA-256 `0151039e971abe30dec5268f866c47cb33012e778d0def8453eae52dd565cfff`.
+has SHA-256 `2977b506879e52785efb467b6c019c71cd41cf008d76b0d090a70e46b2432dcd`.
+The durability-only binary it replaced (`0151039e…`) is kept at
+`/home/codeasier/backups/engine-iii-0.22.1/` for rollback, and
+`prestart_new.py` pins the staged digest, so a mismatched binary fails closed
+instead of starting.
 Audited Rust filters passed 42 KV-core, 9 state-adapter, 8 stream-adapter,
-and 1 StreamWorker error test; the deterministic delete/recreate regression
-first failed on inherited behavior and then passed with the fix. Unfiltered
-Rust tests are unsafe beside the live service: an unrelated bridge-client test
-removes `III_URL` and connects to its production default port.
+1 StreamWorker error, 5 heap-maintenance and 11 stream-worker tests; the
+deterministic delete/recreate regression first failed on inherited behavior and
+then passed with the fix. Unfiltered Rust tests are unsafe beside the live
+service: an unrelated bridge-client test removes `III_URL` and connects to its
+production default port.
 
 The **exact final engine plus rebuilt application** passed historical reads,
 100 distinct accepted observations, a persisted memory and deletion, REST
@@ -120,6 +127,93 @@ the detached engine's exit status and must not be treated as final-flush proof.
 For this manual migration, compare a cold-booted *current offline snapshot*
 with pre-stop read-only witnesses before production promotion; keep rollback
 ready if it differs.
+
+## Memory growth after the cutover
+
+The 0.22.1 pair fixed durability, not resident memory, and its isolated RSS
+samples explicitly did not establish a long-running bound. On 2026-10-06 the
+cgroup went from a 1503–1830 MB plateau (10-02…10-05) to 2413 MB within 1.5 h of
+the hook workload resuming, while the on-disk store grew only 14 MB (223→237 MB)
+and the index 10 MB. Attribution at the time: the engine's `file_based` KV holds
+the whole store as `serde_json::Value` trees and deep-copied a scope's tree on
+every `set`, `get`, `update`, `list` and save-loop flush, so glibc kept the freed
+churn inside its per-thread arenas — the process showed five exactly 64 MiB-aligned
+anonymous mappings, the arena heap shape, against a 20-core
+`MALLOC_ARENA_MAX` ceiling of 160.
+
+This is an engine defect, and it is not ours alone: upstream
+[iii-hq/iii#2257](https://github.com/iii-hq/iii/issues/2257) (2026-09-30) reports
+the same signature with the same diagnosis, and the maintainers answered that
+they had located it and would include the fix in a new release. That fix,
+`4318fbfb9` / PR #2261, shipped only in the `iii/v0.24.6-rc.1` pre-release — not
+in `v0.24.4`, not in 0.22.1, and no stable release carries it yet. The
+client-side mitigation upstream shipped in agentmemory (`b3d6cf5` / PR #1457,
+`MALLOC_ARENA_MAX=2`) is likewise unreleased: npm `latest` is 0.9.29. Bumping the
+engine is not a path — 0.23.0 rejects the inline `workers:` config 0.9.29 renders,
+and 0.22.1 exposes no WebSocket transport for the bundled iii-sdk 0.11.2 client.
+
+Commit `6ee52b21e` therefore ports the upstream fix onto our 0.22.1 line:
+
+- `Scope` becomes `IndexMap<String, Arc<Value>>`, so readers, persistence and
+  the save loop share one immutable tree by handle; the per-operation deep copy
+  drops from two or three to at most one.
+- `load_store_from_dir` reads the archive by reference, and the writer streams
+  through `IoWriter<BufWriter<File>>`, removing two full-size transient buffers
+  per scope.
+- A new `engine/src/memory.rs` gives the engine one `HeapMaintenance` task per
+  `serve()` lifetime that calls `libc::malloc_trim(0)` every 60 s, started after
+  fallible setup and stopped before teardown, independently of worker
+  registration, observability and reloads.
+- The stream adapter stops cloning its payload, and `list` returns
+  `Value::Array(values)` instead of re-serializing the whole group.
+
+The on-disk archive format and the graceful-shutdown flush contract are
+unchanged, which the full KV-core and adapter suites confirm.
+
+### Isolated A/B, same corpus and same load
+
+`/home/codeasier/agentmemory-engine-ab/ab.py` runs one engine at a time against
+a private copy of the production store on shifted ports (3411/3412/3413/49434)
+with a loopback embedding fixture. Both passes used the same seed
+(265,142,540 bytes, 50,513 vectors, 44,100 BM25 documents, 1,007 sessions), 6,000
+hook writes across eight sessions, then 240 scope reads and 60 searches. The
+adapter cadence was published at 200 ms in both passes so a short burst exercises
+hundreds of flush batches rather than a handful; this accelerates the same code
+path and is not a workload change.
+
+| Engine RSS | after boot | after writes | after reads | idle 120 s |
+| --- | ---: | ---: | ---: | ---: |
+| `0151039e` (durability only) | 978.4 MiB | 983.3 MiB | **1048.8 MiB** | 1048.8 MiB |
+| `2977b506` (this patch) | 997.5 MiB | 991.2 MiB | **991.2 MiB** | **941.2 MiB** |
+
+The old engine gained 70.4 MiB across the read phase and never returned it; the
+new one stayed flat and the 60 s trim pulled it 50 MiB below its boot value, for
+a 107.6 MiB gap at the end of the same work. Both passes read back all 6,000
+canary observations after a restart with byte-identical ID and content hashes.
+The new engine's ~19 MiB higher boot is the `Arc<Value>` indirection cost
+(pointer plus refcount header per entry) and is the price of not copying.
+
+### Production result, 2026-10-06 13:11
+
+The staged binary was replaced atomically, `prestart_new.py` was repointed at
+the new digest, and the service was stopped explicitly (exit 0, all four ports
+released, cgroup removed) before starting. Read-only witnesses taken before the
+stop matched exactly after it: 50 memory content hashes, and three sessions at
+500/500/431 observations with identical ID and content hashes.
+
+Engine RSS fell from 1547 MB — the pre-fix level at the same corpus — to a
+942–1064 MB sawtooth that keeps returning to ~950 MB, and the cgroup from
+2345 MB to 2066–2187 MB. The sawtooth is the trim working: memory is handed back
+after each churn burst instead of ratcheting. The Node worker's own footprint
+(~900 MB, dominated by the 53k-vector index in `external`) is unchanged by this
+patch and remains the next ceiling.
+
+Monitoring caveat, fixed in the same pass: `agentmemory-cgroup-watch.sh` matched
+the engine with `pgrep -f 'bin/iii --config'`, which stopped matching when the
+0.22.1 layout moved the binary from `<prefix>/bin/iii` to `<prefix>/iii`.
+`node_agentmemory_process_rss_bytes{role="engine"}` was therefore absent from
+2026-10-01 02:18 onward, leaving the growing process unwatched. It now matches
+the process name with the legacy pattern as a fallback.
 
 ## Application migration safeguards
 
