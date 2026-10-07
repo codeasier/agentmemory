@@ -77,7 +77,7 @@ import {
   engineStateConfigPaths,
   renderEngineConfig,
 } from "./cli/engine-config.js";
-import { SHUTDOWN_HARD_EXIT_MS } from "./shutdown.js";
+import { SHUTDOWN_WORKER_GRACE_MS } from "./shutdown.js";
 import { consoleArgs, defaultConsolePort, parseConsoleArgs } from "./cli/console.js";
 import { processStatIsRunning } from "./cli/process-state.js";
 import { renderSplash } from "./cli/splash.js";
@@ -3335,10 +3335,10 @@ async function waitForEngineFlush(): Promise<void> {
   s.stop("iii-engine state flush window passed");
 }
 
-async function stopWorkerPid(pid: number, graceMs: number): Promise<boolean> {
+async function stopWorkerPid(pid: number): Promise<boolean> {
   const s = p.spinner();
   s.start(`Stopping agentmemory worker (pid ${pid})... [flushing state]`);
-  const ok = await signalAndWait(pid, "SIGTERM", graceMs);
+  const ok = await signalAndWait(pid, "SIGTERM", SHUTDOWN_WORKER_GRACE_MS);
   s.stop(ok ? `Stopped worker pid ${pid}` : `Failed to stop worker pid ${pid}`);
   return ok;
 }
@@ -3366,7 +3366,7 @@ async function stopNativeEngineForRemoval(): Promise<NativeRemovalStopResult> {
   }
 
   if (workerPid) {
-    if (!(await stopWorkerPid(workerPid, 5000))) {
+    if (!(await stopWorkerPid(workerPid))) {
       return {
         ok: false,
         reason: `worker pid ${workerPid} could not be stopped; no engine or files were removed`,
@@ -3465,7 +3465,7 @@ async function stopDockerEngine(
   const resolvedState = persistDockerInspection(state, inspection);
 
   const workerPid = readWorkerPidfile();
-  if (workerPid && !(await stopWorkerPid(workerPid, 5000))) {
+  if (workerPid && !(await stopWorkerPid(workerPid))) {
     p.log.error("The agentmemory worker could not be stopped; Docker ownership state was preserved.");
     process.exit(1);
   }
@@ -3543,7 +3543,7 @@ async function stopDockerEngine(
     process.exit(1);
   }
   if (!suppressOutro) {
-    p.outro("Stopped. Memories persisted to disk; restart anytime with: npx @agentmemory/agentmemory");
+    p.outro("Stopped. Check shutdown warnings for incomplete writes; restart with: npx @agentmemory/agentmemory");
   }
 }
 
@@ -3583,7 +3583,7 @@ async function runStop(): Promise<void> {
       // instead of preserving for manual cleanup.
       const s = p.spinner();
       s.start(`Stopping orphaned agentmemory worker (pid ${workerPid})...`);
-      const ok = await signalAndWait(workerPid, "SIGTERM", SHUTDOWN_HARD_EXIT_MS + 1000);
+      const ok = await signalAndWait(workerPid, "SIGTERM", SHUTDOWN_WORKER_GRACE_MS);
       s.stop(ok ? `Stopped worker pid ${workerPid}` : `Failed to stop worker pid ${workerPid}`);
       clearEnginePidfile();
       clearEngineState();
@@ -3592,7 +3592,7 @@ async function runStop(): Promise<void> {
         p.log.error(`Worker pid ${workerPid} survived SIGKILL. Investigate with \`ps\`.`);
         process.exit(1);
       }
-      p.outro("Stopped orphaned worker. Memories persisted to disk.");
+      p.outro("Stopped orphaned worker. Check shutdown warnings for incomplete writes.");
       return;
     }
     const survivors = new Set<number>(portPids);
@@ -3643,15 +3643,10 @@ async function runStop(): Promise<void> {
   }
 
   let allStopped = true;
-  // stop worker first, then engine. The worker's shutdown
-  // handler calls indexPersistence.save() -> kv.set() -> iii state::set
-  // to flush BM25/vector snapshots + audit rows. Killing iii first
-  // leaves those writes with no engine to land on, and the index +
-  // observations end up as in-memory state the iii process never
-  // persists. Worker SIGTERM grace bumped 3s -> 5s to give a large
-  // index a real chance to commit before the engine goes away.
+  // Keep the engine alive while the worker submits vector rows and metadata.
+  // State acknowledgements are not a disk barrier; allow the full worker budget.
   for (const pid of workerCandidates) {
-    if (!(await stopWorkerPid(pid, SHUTDOWN_HARD_EXIT_MS + 1000))) allStopped = false;
+    if (!(await stopWorkerPid(pid))) allStopped = false;
   }
   if (workerCandidates.size > 0 && [...candidates].some((pid) => !workerCandidates.has(pid))) {
     await waitForEngineFlush();
@@ -3690,7 +3685,7 @@ async function runStop(): Promise<void> {
     p.log.error("One or more processes survived SIGKILL. Investigate with `ps`.");
     process.exit(1);
   }
-  p.outro("Stopped. Memories persisted to disk; restart anytime with: npx @agentmemory/agentmemory");
+  p.outro("Stopped. Check shutdown warnings for incomplete writes; restart with: npx @agentmemory/agentmemory");
 }
 
 async function runMcp(): Promise<void> {
