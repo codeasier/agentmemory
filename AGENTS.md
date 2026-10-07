@@ -5,7 +5,7 @@
 agentmemory is a persistent memory system for AI coding agents, built on iii-engine's three primitives (Worker/Function/Trigger). Everything goes through `registerFunction`/`registerTrigger`/`sdk.trigger()` — never bypass iii-engine with standalone SQLite or in-process alternatives.
 
 - **Engine**: iii-sdk 0.22.1 with @iii-dev/helpers 0.22.1 (WebSocket to iii-engine 0.22.1 on port 49134; the client type is `IIIClient`, HTTP requests are `HttpRequest` from `@iii-dev/helpers/http`)
-- **State**: File-based SQLite via iii-engine's StateModule (`./data/state_store.db`)
+- **State**: iii-engine's `file_based` KV adapter stores percent-encoded scope `.bin` files inside the `state_store.db` directory; it is **not SQLite**. The data root and config decide the absolute path; successful writes are not per-write fsync acknowledgements.
 - **Build**: TypeScript → ESM via tsdown, output to `dist/`
 - **Test**: vitest (`npm test` excludes integration tests)
 
