@@ -11,6 +11,13 @@ import { KV } from "../src/state/schema.js";
 
 vi.mock("../src/logger.js", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
+// These fixtures drive the session source budget with a 27k-char tool output.
+// The observe payload bound would cap it before the source budget sees it and
+// keep it under the remaining allowance, so capture it unbounded here.
+vi.hoisted(() => {
+  process.env.AGENTMEMORY_OBSERVE_TOOL_OUTPUT_CHARS = "0";
+});
+
 const sessionId = "live-source-budget";
 const scope = KV.observations(sessionId);
 const output = "captured evidence ".repeat(1500);
