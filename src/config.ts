@@ -565,6 +565,28 @@ export function isVectorBackfillAllEnabled(): boolean {
   return getMergedEnv()["AGENTMEMORY_VECTOR_BACKFILL"] === "all";
 }
 
+export const TIMER_MAX_INTERVAL_MS = 2147483647;
+
+export function parsePositiveIntervalMs(
+  raw: string | undefined,
+  fallbackMs: number,
+): number {
+  if (raw === undefined || !/^\d+$/.test(raw.trim())) return fallbackMs;
+  const n = Number(raw.trim());
+  return n > 0 && n <= TIMER_MAX_INTERVAL_MS ? n : fallbackMs;
+}
+
+export function isEvictionEnabled(): boolean {
+  return getEnvVar("AGENTMEMORY_EVICTION_ENABLED") === "true";
+}
+
+export function getEvictionIntervalMs(): number {
+  return parsePositiveIntervalMs(
+    getEnvVar("AGENTMEMORY_EVICTION_INTERVAL_MS"),
+    86400000,
+  );
+}
+
 export function isStandaloneMcp(): boolean {
   return getMergedEnv()["STANDALONE_MCP"] === "true";
 }

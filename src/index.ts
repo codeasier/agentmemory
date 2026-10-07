@@ -20,6 +20,8 @@ import {
   isSessionSweepEnabled,
   isGraphCompactOnBootEnabled,
   getSessionSweepStaleHours,
+  isEvictionEnabled,
+  getEvictionIntervalMs,
 } from "./config.js";
 import {
   createProvider,
@@ -65,7 +67,7 @@ import { registerFileIndexFunction } from "./functions/file-index.js";
 import { registerConsolidateFunction } from "./functions/consolidate.js";
 import { registerPatternsFunction } from "./functions/patterns.js";
 import { registerRememberFunction } from "./functions/remember.js";
-import { registerEvictFunction } from "./functions/evict.js";
+import { registerEvictFunction, reportEvictionScheduled } from "./functions/evict.js";
 import { registerRelationsFunction } from "./functions/relations.js";
 import { registerTimelineFunction } from "./functions/timeline.js";
 import { registerSmartSearchFunction } from "./functions/smart-search.js";
@@ -123,7 +125,7 @@ import { registerHealthMonitor } from "./health/monitor.js";
 import { createStreamRelayProbe } from "./health/stream-relay-probe.js";
 import { initMetrics, OTEL_CONFIG } from "./telemetry/setup.js";
 import { VERSION } from "./version.js";
-import { bootLog, bootWarn } from "./logger.js";
+import { bootLog, bootWarn, logger } from "./logger.js";
 import { runtimeMetadataPath } from "./runtime-paths.js";
 import { ensureServerSecret, explicitSecret, secretFilePath } from "./secret-store.js";
 import { mkdirSync, writeFileSync, unlinkSync } from "node:fs";
@@ -696,6 +698,35 @@ async function main() {
     bootLog(
       `Audit retention sweep: enabled (drop month scopes older than ${auditRetentionMonths}mo, every 24h)`,
     );
+  }
+
+  let evictionInFlight = false;
+  if (isEvictionEnabled()) {
+    const evictionIntervalMs = getEvictionIntervalMs();
+    const evictionTimer = setInterval(async () => {
+      if (evictionInFlight) {
+        logger.warn("Eviction sweep skipped — previous sweep still running");
+        return;
+      }
+      evictionInFlight = true;
+      const startedAt = Date.now();
+      try {
+        const stats = await sdk.trigger({ function_id: "mem::evict", payload: { dryRun: false } });
+        logger.info("Scheduled eviction sweep complete", {
+          stats,
+          durationMs: Date.now() - startedAt,
+        });
+      } catch (err) {
+        logger.warn("Scheduled eviction sweep failed", {
+          error: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - startedAt,
+        });
+      } finally {
+        evictionInFlight = false;
+      }
+    }, evictionIntervalMs);
+    evictionTimer.unref();
+    reportEvictionScheduled(evictionIntervalMs);
   }
 
   if (process.env.LESSON_DECAY_ENABLED !== "false") {
