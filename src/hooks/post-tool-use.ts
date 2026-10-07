@@ -2,10 +2,10 @@
 import {
   captureOutputMax,
   shouldCaptureTool,
-  truncateCaptureOutput,
 } from "./_capture-filter.js";
 import { resolveProject, hookCwd } from "./_project.js";
 import { captureObservation, isDrainChild, runDrainChild, withEventId } from "./_capture.js";
+import { truncate } from "./truncate.js";
 
 function isSdkChildContext(payload: unknown): boolean {
   if (process.env["AGENTMEMORY_SDK_CHILD"] === "1") return true;
@@ -43,7 +43,7 @@ async function main() {
   const cwd = hookCwd(data) || process.cwd();
   const outputMax = captureOutputMax();
 
-  const toolOutputText = truncateCaptureOutput(cleanOutput, outputMax);
+  const toolOutputText = truncate(cleanOutput, outputMax);
   const body = withEventId(
     {
       hookType: "post_tool_use",
