@@ -92,7 +92,20 @@ describe("fresh native engine startup", () => {
     expect(workerBody).toContain('await import("./index.js")');
 
     expect(source.match(/await startWorkerForEngineState\(\)/g)).toHaveLength(4);
-    expect(source).toContain("agentmemory worker did not become ready within 15s");
+    expect(source).toContain("agentmemory worker did not become ready within ${agentmemoryReadyTimeoutMs() / 1000}s");
+  });
+
+  it("waits for the worker with the configurable ready timeout, never a hardcoded 15s", () => {
+    const helperStart = source.indexOf("function agentmemoryReadyTimeoutMs()");
+    const helperEnd = source.indexOf("async function waitForAgentmemoryReady", helperStart);
+    expect(helperStart).toBeGreaterThan(0);
+    const helper = source.slice(helperStart, helperEnd);
+    expect(helper).toContain('process.env.AGENTMEMORY_READY_TIMEOUT_MS');
+    expect(helper).toContain("Number.isInteger(parsed) && parsed > 0 ? parsed : 15_000");
+
+    expect(source.match(/waitForAgentmemoryReady\(agentmemoryReadyTimeoutMs\(\)\)/g)).toHaveLength(5);
+    expect(source).not.toContain("waitForAgentmemoryReady(15000)");
+    expect(source).not.toContain("agentmemory worker did not become ready within 15s");
   });
 
   it("stores lifecycle metadata per resolved instance and scopes Docker", () => {

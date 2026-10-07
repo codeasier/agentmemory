@@ -1848,8 +1848,8 @@ async function reconcilePersistedDockerEngine(): Promise<boolean> {
     process.exit(1);
   }
   await startWorkerForEngineState();
-  if (!(await waitForAgentmemoryReady(15000))) {
-    p.log.error("agentmemory worker did not become ready within 15s.");
+  if (!(await waitForAgentmemoryReady(agentmemoryReadyTimeoutMs()))) {
+    p.log.error(`agentmemory worker did not become ready within ${agentmemoryReadyTimeoutMs() / 1000}s.`);
     process.exit(1);
   }
   await maybeOfferGlobalInstall();
@@ -1905,6 +1905,15 @@ function portInUseDiagnostic(port: number): string {
   return IS_WINDOWS
     ? `  netstat -ano | findstr :${port}`
     : `  lsof -i :${port}   # or: ss -tlnp | grep :${port}`;
+}
+
+// Booting a large store can list enough vector buckets to outlast the 15s
+// default, so a deployment whose worker legitimately needs longer sets
+// AGENTMEMORY_READY_TIMEOUT_MS (the production systemd unit uses 120000).
+function agentmemoryReadyTimeoutMs(): number {
+  const raw = process.env.AGENTMEMORY_READY_TIMEOUT_MS;
+  const parsed = raw === undefined ? NaN : Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 15_000;
 }
 
 async function waitForAgentmemoryReady(timeoutMs: number): Promise<boolean> {
@@ -2014,7 +2023,7 @@ async function main() {
   if (skipEngine) {
     if (IS_VERBOSE) p.log.info("Skipping engine check (--no-engine)");
     await import("./index.js");
-    if (await waitForAgentmemoryReady(15000)) {
+    if (await waitForAgentmemoryReady(agentmemoryReadyTimeoutMs())) {
       await maybeOfferGlobalInstall();
       printReadyHint();
     }
@@ -2050,8 +2059,8 @@ async function main() {
     if (detected === IIPINNED_VERSION) {
       adoptRunningEngine();
       await startWorkerForEngineState();
-      if (!(await waitForAgentmemoryReady(15000))) {
-        p.log.error("agentmemory worker did not become ready within 15s.");
+      if (!(await waitForAgentmemoryReady(agentmemoryReadyTimeoutMs()))) {
+        p.log.error(`agentmemory worker did not become ready within ${agentmemoryReadyTimeoutMs() / 1000}s.`);
         process.exit(1);
       }
       await maybeOfferGlobalInstall();
@@ -2161,8 +2170,8 @@ async function main() {
 
   s.stop(c.ok("iii-engine is ready"));
   await startWorkerForEngineState();
-  if (!(await waitForAgentmemoryReady(15000))) {
-    p.log.error("agentmemory worker did not become ready within 15s.");
+  if (!(await waitForAgentmemoryReady(agentmemoryReadyTimeoutMs()))) {
+    p.log.error(`agentmemory worker did not become ready within ${agentmemoryReadyTimeoutMs() / 1000}s.`);
     process.exit(1);
   }
   await maybeOfferGlobalInstall();
@@ -3000,8 +3009,8 @@ async function startServerForDemo(): Promise<() => Promise<void>> {
   }
 
   await startWorkerForEngineState();
-  if (!(await waitForAgentmemoryReady(15000))) {
-    p.log.error("agentmemory worker did not become ready within 15s.");
+  if (!(await waitForAgentmemoryReady(agentmemoryReadyTimeoutMs()))) {
+    p.log.error(`agentmemory worker did not become ready within ${agentmemoryReadyTimeoutMs() / 1000}s.`);
     process.exit(1);
   }
 
