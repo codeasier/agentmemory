@@ -1,4 +1,11 @@
-import { VectorIndex, base64ToFloat32, float32ToBase64, type VectorEntry } from "./vector-index.js";
+import {
+  VectorIndex,
+  base64ToFloat32,
+  decodePersistedEmbedding,
+  float32ToBase64,
+  float32ToFloat16Base64,
+  type VectorEntry,
+} from "./vector-index.js";
 import type { StateKV } from "./kv.js";
 import { KV } from "./schema.js";
 import { logger } from "../logger.js";
@@ -37,7 +44,7 @@ type IndexShardManifest = {
 };
 
 type VectorMeta = {
-  v: 3;
+  v: 3 | 4;
   bucketCount: number;
   savedAt: string;
   count: number;
@@ -47,6 +54,7 @@ type PersistedVector = {
   id: string;
   s: string;
   e: string;
+  c?: "f16";
 };
 
 type PendingVectorRow = {
@@ -149,7 +157,20 @@ function isValidShardDescriptor(
 function isPersistedVector(row: unknown): row is PersistedVector {
   if (!row || typeof row !== "object") return false;
   const candidate = row as Partial<PersistedVector>;
-  return typeof candidate.id === "string" && typeof candidate.s === "string" && typeof candidate.e === "string";
+  if (typeof candidate.id !== "string" || typeof candidate.s !== "string" || typeof candidate.e !== "string") {
+    return false;
+  }
+  return candidate.c === undefined || candidate.c === "f16";
+}
+
+function isBucketMeta(meta: unknown): meta is VectorMeta {
+  if (!meta || typeof meta !== "object") return false;
+  const candidate = meta as Partial<VectorMeta>;
+  return (
+    (candidate.v === 3 || candidate.v === 4) &&
+    Number.isInteger(candidate.bucketCount) &&
+    (candidate.bucketCount as number) >= 0
+  );
 }
 
 async function inBatches<T>(items: T[], size: number, run: (item: T) => Promise<void>): Promise<unknown[]> {
@@ -447,8 +468,8 @@ export class IndexPersistence {
       return { vector: null, state: "unavailable", savedAt: null };
     }
 
-    if (meta && meta.v === 3 && Number.isInteger(meta.bucketCount) && meta.bucketCount >= 0) {
-      const loaded = await this.loadBuckets(meta.bucketCount);
+    if (isBucketMeta(meta)) {
+      const loaded = await this.loadBuckets(meta.bucketCount, meta.v);
       if (!loaded) return { vector: null, state: "unavailable", savedAt: null };
       this.metaWritten = true;
       await this.removeLegacyVectorSnapshotIfPresent();
@@ -572,7 +593,8 @@ export class IndexPersistence {
           await this.kv.set<PersistedVector>(vectorBucketScope(bucket), id, {
             id,
             s: entry.sessionId,
-            e: float32ToBase64(entry.embedding),
+            e: float32ToFloat16Base64(entry.embedding),
+            c: "f16",
           });
         } else {
           const bucket = this.bucketOfId.get(id);
@@ -594,7 +616,7 @@ export class IndexPersistence {
     }
     try {
       await this.kv.set<VectorMeta>(KV.bm25Index, VECTOR_META_KEY, {
-        v: 3,
+        v: 4,
         bucketCount: this.bucketCountInUse(),
         savedAt: new Date(this.now()).toISOString(),
         count: vector.size,
@@ -606,18 +628,21 @@ export class IndexPersistence {
     this.metaWritten = true;
   }
 
-  private async loadBuckets(bucketCount: number): Promise<VectorIndex | null> {
+  private async loadBuckets(bucketCount: number, metaVersion: 3 | 4): Promise<VectorIndex | null> {
     const loaded = new VectorIndex();
     const bucketOfId = new Map<string, number>();
     const bucketCounts = new Map<number, number>();
     const bucketIds = Array.from({ length: bucketCount }, (_, bucket) => bucket);
+    let sawLegacyCodec = false;
     const failures = await inBatches(bucketIds, LOAD_CONCURRENCY, async (bucket) => {
       const rows = await this.kv.list<unknown>(vectorBucketScope(bucket));
       let count = 0;
       for (const row of rows) {
         if (!isPersistedVector(row)) continue;
         try {
-          loaded.loadPersisted(row.id, row.s, base64ToFloat32(row.e));
+          const codec = row.c === "f16" ? "f16" : undefined;
+          if (codec !== "f16") sawLegacyCodec = true;
+          loaded.loadPersisted(row.id, row.s, decodePersistedEmbedding(row.e, codec));
         } catch {
           continue;
         }
@@ -637,6 +662,9 @@ export class IndexPersistence {
     this.bucketCounts = bucketCounts;
     this.highestBucket = bucketCount > 0 ? bucketCount - 1 : 0;
     this.hasOpenBucket = bucketCount > 0;
+    if (metaVersion === 3 || sawLegacyCodec) {
+      loaded.markAllChanged();
+    }
     return loaded;
   }
 
