@@ -226,3 +226,136 @@ describe("observe payload bounds", () => {
     expect(JSON.stringify(rawWrite.userPrompt).length).toBeLessThanOrEqual(64);
   });
 });
+
+describe("observe session counter and timestamp bounds", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    for (const key of LIMIT_KEYS) delete process.env[key];
+    const { getSearchIndex, setIndexPersistence } = await import(
+      "../src/functions/search.js"
+    );
+    getSearchIndex().clear();
+    setIndexPersistence(null);
+  });
+
+  afterEach(() => {
+    for (const key of LIMIT_KEYS) delete process.env[key];
+  });
+
+  it("clamps a future-stamped timestamp to ingest time", async () => {
+    const { registerObserveFunction } = await import(
+      "../src/functions/observe.js"
+    );
+    const sdk = mockSdk();
+    const kv = mockKV();
+    registerObserveFunction(sdk as never, kv as never);
+
+    const before = Date.now();
+    await sdk.trigger("mem::observe", {
+      ...payloadFor("ses_skew", { tool_name: "Read" }),
+      timestamp: new Date(before + 86_400_000).toISOString(),
+    });
+
+    const rawWrite = storedRaw(kv, "ses_skew");
+    const stored = Date.parse(rawWrite.timestamp);
+    expect(stored).toBeGreaterThanOrEqual(before);
+    expect(stored).toBeLessThanOrEqual(Date.now());
+    expect(rawWrite.origin?.capturedAt).toBe(rawWrite.timestamp);
+  });
+
+  it("leaves a past-stamped replayed timestamp untouched", async () => {
+    const { registerObserveFunction } = await import(
+      "../src/functions/observe.js"
+    );
+    const sdk = mockSdk();
+    const kv = mockKV();
+    registerObserveFunction(sdk as never, kv as never);
+
+    const replay = "2025-01-02T03:04:05.000Z";
+    await sdk.trigger("mem::observe", {
+      ...payloadFor("ses_replay", { tool_name: "Read" }),
+      timestamp: replay,
+    });
+
+    expect(storedRaw(kv, "ses_replay").timestamp).toBe(replay);
+  });
+
+  it("advances the session counter before the observation write", async () => {
+    const { registerObserveFunction } = await import(
+      "../src/functions/observe.js"
+    );
+    const sdk = mockSdk();
+    const kv = mockKV();
+    await kv.set("mem:sessions", "ses_brownout", {
+      id: "ses_brownout",
+      observationCount: 2,
+      status: "active",
+    });
+    const failing = {
+      ...kv,
+      set: async (scope: string, key: string, data: unknown) => {
+        if (scope === "mem:obs:ses_brownout") throw new Error("engine brownout");
+        return kv.set(scope, key, data);
+      },
+    };
+    registerObserveFunction(sdk as never, failing as never, undefined, 10);
+
+    await expect(
+      sdk.trigger("mem::observe", payloadFor("ses_brownout", { tool_name: "Read" })),
+    ).rejects.toThrow("engine brownout");
+
+    // The counter is already advanced: over-counting is the safe direction
+    // (mem::summarize and mem::migrate rewrite the count from the stored
+    // observations), while the old write-first order left the counter stale
+    // and low whenever the session-row update failed.
+    expect(
+      (
+        await kv.get<{ observationCount: number }>("mem:sessions", "ses_brownout")
+      )?.observationCount,
+    ).toBe(3);
+    expect(await kv.list("mem:obs:ses_brownout")).toHaveLength(0);
+  });
+
+  it("counts the observations already stored when it implicitly creates a session", async () => {
+    const { registerObserveFunction } = await import(
+      "../src/functions/observe.js"
+    );
+    const sdk = mockSdk();
+    const kv = mockKV();
+    await kv.set("mem:obs:ses_missing", "old_1", { id: "old_1" });
+    await kv.set("mem:obs:ses_missing", "old_2", { id: "old_2" });
+    registerObserveFunction(sdk as never, kv as never, undefined, 3);
+
+    const payload = payloadFor("ses_missing", { tool_name: "Read" });
+    expect(await sdk.trigger("mem::observe", payload)).toMatchObject({
+      observationId: expect.any(String),
+    });
+    expect(
+      (
+        await kv.get<{ observationCount: number }>("mem:sessions", "ses_missing")
+      )?.observationCount,
+    ).toBe(3);
+    expect(await sdk.trigger("mem::observe", payload)).toMatchObject({
+      success: false,
+      error: "Session observation limit reached (3)",
+    });
+  });
+
+  it("counts surviving observations on an implicit create when the cap is disabled", async () => {
+    const { registerObserveFunction } = await import(
+      "../src/functions/observe.js"
+    );
+    const sdk = mockSdk();
+    const kv = mockKV();
+    await kv.set("mem:obs:ses_uncapped", "old_1", { id: "old_1" });
+    registerObserveFunction(sdk as never, kv as never, undefined, 0);
+
+    await sdk.trigger("mem::observe", payloadFor("ses_uncapped", { tool_name: "Read" }));
+
+    expect(
+      (
+        await kv.get<{ observationCount: number }>("mem:sessions", "ses_uncapped")
+      )?.observationCount,
+    ).toBe(2);
+  });
+});

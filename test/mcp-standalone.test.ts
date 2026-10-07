@@ -84,7 +84,33 @@ describe("Tools Registry", () => {
       expect(tool.inputSchema.properties).toBeDefined();
     }
   });
+
+  it("advertises the real memory_audit limit bounds", () => {
+    const audit = getAllTools().find((tool) => tool.name === "memory_audit");
+    const limit = audit?.inputSchema.properties?.["limit"] as
+      | { minimum?: number; maximum?: number; description?: string }
+      | undefined;
+
+    expect(limit?.minimum).toBe(0);
+    expect(limit?.maximum).toBe(1000);
+    expect(limit?.description).toContain("historical 100-row default");
+  });
 });
+
+// Audit rows live in month shards; queryAudit walks the month index and
+// only falls back to the legacy mem:audit scope when the migration marked
+// it safe to list.
+async function seedAuditRows(kv: InMemoryKV, count: number): Promise<void> {
+  const month = "2026-02";
+  await kv.set("mem:audit:months", "index", { months: [month] });
+  for (let i = 0; i < count; i++) {
+    await kv.set(`mem:audit:${month}`, `aud_${String(i).padStart(5, "0")}`, {
+      id: `aud_${i}`,
+      timestamp: `2026-02-01T00:00:${String(i % 60).padStart(2, "0")}.000Z`,
+      operation: "remember",
+    });
+  }
+}
 
 describe("InMemoryKV", () => {
   let kv: InMemoryKV;
@@ -373,6 +399,27 @@ describe("handleToolCall", () => {
       kv,
     );
     expect(JSON.parse(huge.content[0].text).results).toHaveLength(100);
+  });
+
+  it("memory_audit keeps the historical 100-row limit for explicit zero", async () => {
+    const kv = new InMemoryKV();
+    await seedAuditRows(kv, 120);
+
+    const zero = await handleToolCall("memory_audit", { limit: 0 }, kv);
+    const omitted = await handleToolCall("memory_audit", {}, kv);
+    expect(JSON.parse(zero.content[0].text).entries).toHaveLength(100);
+    expect(JSON.parse(omitted.content[0].text).entries).toHaveLength(50);
+  });
+
+  it("memory_audit serves up to the advertised 1000-row maximum, not the generic 100 clamp", async () => {
+    const kv = new InMemoryKV();
+    await seedAuditRows(kv, 1200);
+
+    const exact = await handleToolCall("memory_audit", { limit: 1000 }, kv);
+    expect(JSON.parse(exact.content[0].text).entries).toHaveLength(1000);
+
+    const huge = await handleToolCall("memory_audit", { limit: 99999 }, kv);
+    expect(JSON.parse(huge.content[0].text).entries).toHaveLength(1000);
   });
 
   it("memory_governance_delete removes memories by id array", async () => {

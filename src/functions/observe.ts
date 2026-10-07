@@ -195,6 +195,16 @@ export function registerObserveFunction(
         typeof payload.observationId === "string" && /^obs_[A-Za-z0-9_]{8,80}$/.test(payload.observationId);
       const obsId = durable ? payload.observationId! : generateId("obs");
 
+      // A future-stamped timestamp (client clock skew, misconfigured clock)
+      // would pin the graph-extraction watermark above every subsequent real
+      // observation and permanently block incremental extraction. Clamp to
+      // ingest time; past timestamps (jsonl replay) pass through untouched.
+      const ingestAtMs = Date.now();
+      const parsedPayloadTs = Date.parse(payload.timestamp);
+      if (Number.isFinite(parsedPayloadTs) && parsedPayloadTs > ingestAtMs) {
+        payload.timestamp = new Date(ingestAtMs).toISOString();
+      }
+
       let dedupHash: string | undefined;
       if (dedupMap && typeof payload.eventId !== "string") {
         const dataIsObject =
@@ -336,6 +346,84 @@ export function registerObserveFunction(
           raw.agentId = inheritedAgentId;
         }
 
+        // Advance the session counter BEFORE writing the observation. A
+        // failure then leaves the counter one ahead of the stored rows — the
+        // safe direction, since mem::summarize and mem::migrate rewrite the
+        // count from the observations they read. The previous order (write
+        // first, count afterwards) left a failed session-row update with
+        // more stored observations than the session row claims.
+        const session = existingSession;
+        if (session) {
+          const updates: Array<{ type: "set" | "remove"; path: string; value?: unknown }> = [
+            { type: "set", path: "updatedAt", value: new Date().toISOString() },
+            {
+              type: "set",
+              path: "observationCount",
+              value: (session.observationCount || 0) + 1,
+            },
+          ];
+          if (session.status === "abandoned") {
+            updates.push({ type: "set", path: "status", value: "active" });
+            updates.push({ type: "remove", path: "endedAt" });
+          }
+          if (!session.firstPrompt && typeof raw.userPrompt === "string") {
+            const trimmed = raw.userPrompt.replace(/\s+/g, " ").trim();
+            if (trimmed.length > 0) {
+              updates.push({
+                type: "set",
+                path: "firstPrompt",
+                value: trimmed.slice(0, 200),
+              });
+            }
+          }
+          await kv.update(KV.sessions, payload.sessionId, updates);
+        } else if (
+          typeof payload.project === "string" &&
+          payload.project.trim().length > 0 &&
+          typeof payload.cwd === "string" &&
+          payload.cwd.trim().length > 0
+        ) {
+          // OpenCode (and any plugin that skips POST /session/start)
+          // can fire observations before the session record exists. Without
+          // an implicit create, those observations stack up but
+          // `memory_sessions` never lists them, and summarize bails with
+          // "Session not found for summarize". Create the session now from
+          // the observation payload — but only when project + cwd are
+          // present (HookPayload contract). Older test payloads without
+          // those fields keep their original no-op behaviour.
+          const trimmedPrompt =
+            typeof raw.userPrompt === "string"
+              ? raw.userPrompt.replace(/\s+/g, " ").trim().slice(0, 200)
+              : undefined;
+          const ts = new Date().toISOString();
+          const startedAt = payload.timestamp ?? ts;
+          await kv.set(KV.sessions, payload.sessionId, {
+            id: payload.sessionId,
+            project: payload.project,
+            cwd: payload.cwd,
+            startedAt,
+            updatedAt: ts,
+            status: "active",
+            // +1 for the observation written below this create: the list
+            // cannot have seen it yet.
+            observationCount: existing.length + 1,
+            ...(inheritedAgentId ? { agentId: inheritedAgentId } : {}),
+            ...(trimmedPrompt && trimmedPrompt.length > 0
+              ? { firstPrompt: trimmedPrompt }
+              : {}),
+          });
+          await addSessionToProjectIndex(kv, payload.project, {
+            id: payload.sessionId,
+            startedAt,
+            ...(inheritedAgentId ? { agentId: inheritedAgentId } : {}),
+          }).catch((err) => {
+            logger.warn("session index update failed", {
+              sessionId: payload.sessionId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        }
+
         if (pendingImageData && (pendingImageData.startsWith("data:image/") || pendingImageData.startsWith("iVBORw0KGgo") || pendingImageData.startsWith("/9j/"))) {
           const { filePath, bytesWritten } = await saveImageToDisk(pendingImageData);
           raw.imageData = filePath;
@@ -409,76 +497,6 @@ export function registerObserveFunction(
           },
           action: TriggerAction.Void(),
         });
-
-        const session = existingSession;
-        if (session) {
-          const updates: Array<{ type: "set" | "remove"; path: string; value?: unknown }> = [
-            { type: "set", path: "updatedAt", value: new Date().toISOString() },
-            {
-              type: "set",
-              path: "observationCount",
-              value: (session.observationCount || 0) + 1,
-            },
-          ];
-          if (session.status === "abandoned") {
-            updates.push({ type: "set", path: "status", value: "active" });
-            updates.push({ type: "remove", path: "endedAt" });
-          }
-          if (!session.firstPrompt && typeof raw.userPrompt === "string") {
-            const trimmed = raw.userPrompt.replace(/\s+/g, " ").trim();
-            if (trimmed.length > 0) {
-              updates.push({
-                type: "set",
-                path: "firstPrompt",
-                value: trimmed.slice(0, 200),
-              });
-            }
-          }
-          await kv.update(KV.sessions, payload.sessionId, updates);
-        } else if (
-          typeof payload.project === "string" &&
-          payload.project.trim().length > 0 &&
-          typeof payload.cwd === "string" &&
-          payload.cwd.trim().length > 0
-        ) {
-          // OpenCode (and any plugin that skips POST /session/start)
-          // can fire observations before the session record exists. Without
-          // an implicit create, those observations stack up but
-          // `memory_sessions` never lists them, and summarize bails with
-          // "Session not found for summarize". Create the session now from
-          // the observation payload — but only when project + cwd are
-          // present (HookPayload contract). Older test payloads without
-          // those fields keep their original no-op behaviour.
-          const trimmedPrompt =
-            typeof raw.userPrompt === "string"
-              ? raw.userPrompt.replace(/\s+/g, " ").trim().slice(0, 200)
-              : undefined;
-          const ts = new Date().toISOString();
-          const startedAt = payload.timestamp ?? ts;
-          await kv.set(KV.sessions, payload.sessionId, {
-            id: payload.sessionId,
-            project: payload.project,
-            cwd: payload.cwd,
-            startedAt,
-            updatedAt: ts,
-            status: "active",
-            observationCount: 1,
-            ...(inheritedAgentId ? { agentId: inheritedAgentId } : {}),
-            ...(trimmedPrompt && trimmedPrompt.length > 0
-              ? { firstPrompt: trimmedPrompt }
-              : {}),
-          });
-          await addSessionToProjectIndex(kv, payload.project, {
-            id: payload.sessionId,
-            startedAt,
-            ...(inheritedAgentId ? { agentId: inheritedAgentId } : {}),
-          }).catch((err) => {
-            logger.warn("session index update failed", {
-              sessionId: payload.sessionId,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          });
-        }
 
         // Per-observation LLM compression is opt-in as of 0.8.8.
         // Default path: build a zero-LLM synthetic compression so recall
