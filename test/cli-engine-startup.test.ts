@@ -113,6 +113,10 @@ describe("fresh native engine startup", () => {
     expect(source).toContain('runtimeMetadataPath("engine-state.json")');
     expect(source).toContain('runtimeMetadataPath("worker.pid")');
     expect(source).toContain('process.env["AGENTMEMORY_RUNTIME_DIR"] = selectedInstance > 0');
+    const worker = readFileSync("src/index.ts", "utf8");
+    const proof = readFileSync("src/worker-shutdown-proof.ts", "utf8");
+    expect(worker).toContain("startWorkerShutdownProof()");
+    expect(proof).toContain('runtimeMetadataPath("worker-shutdown.json")');
     expect(source).toContain("dockerProjectName(getRestPort())");
     expect(source).toContain("dockerComposeArgs(");
   });
@@ -131,7 +135,7 @@ describe("fresh native engine startup", () => {
     expect(source).toContain('record.HostConfig?.PortBindings');
     expect(source).toContain('mount.Destination === "/data"');
     expect(source).toContain('["start", inspection.containerId]');
-    expect(source).toContain('["stop", "--time", "10", inspection.containerId]');
+    expect(source).toContain('["stop", "--time", String(SHUTDOWN_ENGINE_GRACE_MS / 1000), inspection.containerId]');
 
     const mainStart = source.indexOf("async function main()");
     const mainEnd = source.indexOf("async function apiFetch", mainStart);

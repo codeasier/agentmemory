@@ -59,6 +59,7 @@ describe("shutdown budgets", () => {
   it("covers the hard exit in CLI grace and still reaps the engine inside the service deadline", () => {
     expect(SHUTDOWN_ENGINE_GRACE_MS).toBeGreaterThan(5000);
     expect(SHUTDOWN_WORKER_GRACE_MS).toBe(SHUTDOWN_HARD_EXIT_MS + 1000);
+    expect(SHUTDOWN_WORKER_GRACE_MS).toBeGreaterThan(SHUTDOWN_ENGINE_GRACE_MS);
     const engineFlushMs = engineFlushWaitMs("file", []);
     expect(engineFlushMs).toBeGreaterThan(0);
     // The production unit's TimeoutStopSec is 150s: worker grace, the engine
@@ -90,12 +91,14 @@ describe("shutdown budgets", () => {
 
   it("uses the shared worker grace for native, Docker, removal and orphan worker stops", () => {
     const source = cliSource();
-    expect(source).toContain('signalAndWait(workerPid, "SIGTERM", SHUTDOWN_WORKER_GRACE_MS)');
-    expect(source.match(/stopWorkerPid\(pid\)/g)).toHaveLength(1);
-    expect(source.match(/stopWorkerPid\(workerPid\)/g)).toHaveLength(2);
+    expect(source.match(/stopNativeWorkerPid\(pid\)/g)).toHaveLength(1);
+    expect(source.match(/stopNativeWorkerPid\(workerPid\)/g)).toHaveLength(2);
+    expect(source.match(/stopWorkerPid\(workerPid\)/g)).toHaveLength(1);
     expect(source).not.toMatch(/stopWorkerPid\([^\n]+,\s*5000\)/);
+    expect(source.match(/await stopWorkerPid\(/g)).toHaveLength(2);
     expect(source).not.toContain("SHUTDOWN_HARD_EXIT_MS");
     expect(source).not.toMatch(/SHUTDOWN_WORKER_GRACE_MS\s*\+/);
+    expect(source.match(/SIGTERM", SHUTDOWN_WORKER_GRACE_MS/g)).toHaveLength(1);
   });
 
   it("keeps the engine-flush window between the worker stop and the engine stop", () => {
@@ -105,10 +108,87 @@ describe("shutdown budgets", () => {
       source.indexOf("async function runMcp()"),
     );
     expect(stop).toContain("await waitForEngineFlush()");
-    expect(stop.indexOf("await stopWorkerPid(pid)"))
+    expect(stop.indexOf("await stopNativeWorkerPid(pid)"))
       .toBeLessThan(stop.indexOf("await waitForEngineFlush()"));
     expect(stop.indexOf("await waitForEngineFlush()"))
       .toBeLessThan(stop.indexOf("Stopping iii-engine"));
+  });
+});
+
+describe("worker shutdown proof gating", () => {
+  it("does not force-kill a slow flush", () => {
+    const source = cliSource();
+    const signal = source.slice(
+      source.indexOf("async function signalAndWait("),
+      source.indexOf("async function stopWorkerPid("),
+    );
+    expect(signal).not.toContain('process.kill(pid, "SIGKILL")');
+    expect(signal).toContain(
+      "preserving it for investigation rather than forcing a potentially incomplete flush",
+    );
+    expect(source).not.toContain('"SIGKILL"');
+  });
+
+  it("checks a running proof before SIGTERM and a success proof before stopping the engine", () => {
+    const source = cliSource();
+    const nativeWorker = source.slice(
+      source.indexOf("async function stopNativeWorkerPid("),
+      source.indexOf("type NativeRemovalStopResult"),
+    );
+    expect(nativeWorker).toContain("captureRunningWorkerProof(pid)");
+    expect(nativeWorker).toContain("workerShutdownSucceeded(proof)");
+    expect(nativeWorker.indexOf("captureRunningWorkerProof(pid)"))
+      .toBeLessThan(nativeWorker.indexOf("await stopWorkerPid(pid)"));
+    expect(nativeWorker.indexOf("await stopWorkerPid(pid)"))
+      .toBeLessThan(nativeWorker.indexOf("workerShutdownSucceeded(proof)"));
+  });
+
+  it("preserves the engine and lifecycle state when the worker stop is unproven", () => {
+    const source = cliSource();
+    const stop = source.slice(
+      source.indexOf("async function runStop()"),
+      source.indexOf("async function runMcp()"),
+    );
+    expect(stop).toContain("await stopNativeWorkerPid(pid)");
+    expect(stop.indexOf("await stopNativeWorkerPid(pid)"))
+      .toBeLessThan(stop.indexOf("Stopping iii-engine"));
+    expect(stop).toContain("Worker PID is missing; cannot prove native worker shutdown");
+    expect(stop).toContain("Native engine state remains but no worker PID is available");
+    expect(stop).toMatch(/if \(!\(await stopNativeWorkerPid\(pid\)\)\) \{[\s\S]*?process\.exit\(1\);/);
+    expect(stop).toMatch(/if \(!ok\) \{[\s\S]*?Engine shutdown timed out\.[\s\S]*?process\.exit\(1\);/);
+    expect(stop.indexOf("clearEnginePidfile();", stop.indexOf("Engine shutdown timed out.")))
+      .toBeGreaterThan(stop.indexOf("if (skippedForeign.length > 0)"));
+    expect(stop).not.toContain("survived SIGKILL");
+
+    const removal = source.slice(
+      source.indexOf("async function stopNativeEngineForRemoval()"),
+      source.indexOf("function pidCommand("),
+    );
+    expect(removal).toContain("await stopNativeWorkerPid(workerPid)");
+    expect(removal.indexOf("await stopNativeWorkerPid(workerPid)"))
+      .toBeLessThan(removal.indexOf("Stopping iii-engine"));
+    expect(removal).toContain("worker PID is missing; no engine or files were removed");
+  });
+
+  it("gates the engine stop on the owner's engine grace instead of a 3s force kill", () => {
+    const source = cliSource();
+    expect(source).toContain('signalAndWait(pid, "SIGTERM", SHUTDOWN_ENGINE_GRACE_MS)');
+    expect(source).not.toContain('signalAndWait(pid, "SIGTERM", 3000)');
+    expect(source).toContain('String(SHUTDOWN_ENGINE_GRACE_MS / 1000)');
+  });
+
+  it("starts the proof at boot and publishes failure on a failed flush or hard exit", () => {
+    const source = indexSource();
+    expect(source).toContain("startWorkerShutdownProof();");
+    expect(source).not.toContain("clearWorkerPidfile()");
+    const shutdown = shutdownHandler();
+    expect(shutdown.indexOf("flushIndexOnShutdown(indexPersistence)"))
+      .toBeLessThan(shutdown.indexOf("completeWorkerShutdownProof(shutdownProof"));
+    expect(shutdown.indexOf("sdk.shutdown()"))
+      .toBeLessThan(shutdown.indexOf("completeWorkerShutdownProof(shutdownProof"));
+    expect(shutdown).toContain('completeWorkerShutdownProof(shutdownProof, exitCode === 0 ? "success" : "failure")');
+    expect(shutdown).toMatch(/const hardExit = setTimeout\(\(\) => \{[\s\S]*?process\.exit\(1\);[\s\S]*?\}, SHUTDOWN_HARD_EXIT_MS\)/);
+    expect(shutdown).toMatch(/catch \(err\) \{\s*exitCode = 1;\s*console\.error\("\[agentmemory\] Could not write worker shutdown proof:/);
   });
 });
 

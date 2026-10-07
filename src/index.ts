@@ -134,8 +134,9 @@ import { initMetrics, OTEL_CONFIG } from "./telemetry/setup.js";
 import { VERSION } from "./version.js";
 import { bootLog, bootWarn, logger } from "./logger.js";
 import { runtimeMetadataPath } from "./runtime-paths.js";
+import { startWorkerShutdownProof, completeWorkerShutdownProof } from "./worker-shutdown-proof.js";
 import { ensureServerSecret, explicitSecret, secretFilePath } from "./secret-store.js";
-import { mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 // Duplicate vector rows detected while loading the buckets are deleted
@@ -155,11 +156,6 @@ function writeWorkerPidfile(): void {
   } catch {
     // best-effort; stop still has the engine pidfile + port scan fallback
   }
-}
-function clearWorkerPidfile(): void {
-  try {
-    unlinkSync(workerPidfilePath());
-  } catch {}
 }
 
 function hasGetMeter(
@@ -260,6 +256,7 @@ async function main() {
     },
   }));
 
+  const shutdownProof = startWorkerShutdownProof();
   writeWorkerPidfile();
 
   let stateBackend: "file" | "redis" = "file";
@@ -801,7 +798,6 @@ async function main() {
       console.warn(
         `[agentmemory] Shutdown still blocked after ${SHUTDOWN_HARD_EXIT_MS}ms; exiting now.`,
       );
-      clearWorkerPidfile();
       process.exit(1);
     }, SHUTDOWN_HARD_EXIT_MS);
     hardExit.unref();
@@ -841,7 +837,12 @@ async function main() {
       console.warn(`[agentmemory] SDK shutdown failed:`, err);
     }
     clearTimeout(hardExit);
-    clearWorkerPidfile();
+    try {
+      completeWorkerShutdownProof(shutdownProof, exitCode === 0 ? "success" : "failure");
+    } catch (err) {
+      exitCode = 1;
+      console.error("[agentmemory] Could not write worker shutdown proof:", err);
+    }
     process.exit(exitCode);
   };
   process.on("SIGINT", shutdown);
