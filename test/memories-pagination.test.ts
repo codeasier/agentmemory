@@ -34,6 +34,14 @@ describe("memories + export pagination", () => {
     );
   });
 
+  it("api::export passes through collection + limit + sessionId query params", () => {
+    expect(api).toMatch(/query_params\?\.\["collection"\]/);
+    expect(api).toMatch(/payload\.collection = rawCollection\.trim\(\)/);
+    expect(api).toMatch(/query_params\?\.\["limit"\]/);
+    expect(api).toMatch(/payload\.limit = n/);
+    expect(api).toMatch(/payload\.sessionId = rawSessionId\.trim\(\)/);
+  });
+
   it("viewer pages memories by cursor and takes counts from the stream instead of re-counting", () => {
     const viewer = readFileSync("src/viewer/index.html", "utf-8");
     expect(viewer).toMatch(/var path = 'memories\?latest=true&limit=100';/);

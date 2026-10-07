@@ -19,12 +19,13 @@ import type {
   Lesson,
   Insight,
   ExportPagination,
+  ExportCollectionPage,
   AccessLogExport,
 } from "../types.js";
 import { importOrigin } from "../types.js";
 import { normalizeAccessLog } from "./access-tracker.js";
 import { KV } from "../state/schema.js";
-import { checkPayloadFrameSize, oversizedPayloadError, payloadByteLength, SAFE_PAYLOAD_BYTES } from "../state/frame-guard.js";
+import { checkPayloadFrameSize, oversizedPayloadError, payloadByteLength, SAFE_PAYLOAD_BYTES, type OversizedPayload } from "../state/frame-guard.js";
 import { StateKV } from "../state/kv.js";
 import {
   addSessionToProjectIndex,
@@ -67,7 +68,7 @@ async function runChunked<T>(
 }
 
 const EXPORT_OVERSIZE_HINT =
-  "narrow the range with ?maxSessions / ?offset, or export fewer collections; the non-session collections (memories, graph, semantic, actions, lessons, ...) are not yet paginated";
+  "narrow the range with ?maxSessions / ?offset, or page a single collection with ?collection / ?offset / ?limit (the nightly backup path)";
 
 const EXPORT_COLLECTIONS: ReadonlyArray<readonly [keyof ExportData, string]> = [
   ["graphNodes", KV.graphNodes],
@@ -88,6 +89,113 @@ const EXPORT_COLLECTIONS: ReadonlyArray<readonly [keyof ExportData, string]> = [
   ["accessLogs", KV.accessLog],
 ];
 
+// Non-session collections addressable through the collection paging path.
+// Keys are the ExportData field names so a paged backup can be reassembled
+// by direct field mapping; `sessions` and per-session `observations` are
+// handled separately below.
+const EXPORT_COLLECTION_SCOPES: Record<string, string> = {
+  memories: KV.memories,
+  summaries: KV.summaries,
+  profiles: KV.profiles,
+  graphNodes: KV.graphNodes,
+  graphEdges: KV.graphEdges,
+  semanticMemories: KV.semantic,
+  proceduralMemories: KV.procedural,
+  actions: KV.actions,
+  actionEdges: KV.actionEdges,
+  routines: KV.routines,
+  signals: KV.signals,
+  checkpoints: KV.checkpoints,
+  sentinels: KV.sentinels,
+  sketches: KV.sketches,
+  crystals: KV.crystals,
+  facets: KV.facets,
+  lessons: KV.lessons,
+  insights: KV.insights,
+  accessLogs: KV.accessLog,
+};
+
+const EXPORT_PAGE_DEFAULT_LIMIT = 1000;
+const EXPORT_PAGE_MAX_LIMIT = 10_000;
+
+// One page of exactly one collection. The default export path pages only
+// sessions via maxSessions/offset and loads every other collection
+// wholesale, so a large store cannot squeeze under the transport frame cap
+// no matter how small maxSessions is. Collection mode lets a caller (the
+// nightly backup) walk each collection in bounded pages and reassemble an
+// import-compatible document locally. Offset paging is stable as long as
+// no writes land mid-walk; the backup runs after the nightly consolidation
+// finishes, when the store is quiet.
+async function exportCollectionPage(
+  kv: StateKV,
+  collection: string,
+  data?: { offset?: number; limit?: number; sessionId?: string },
+): Promise<ExportCollectionPage | OversizedPayload | { success: false; error: string }> {
+  const rawLimit = Number(data?.limit);
+  const limit =
+    Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(Math.floor(rawLimit), EXPORT_PAGE_MAX_LIMIT)
+      : EXPORT_PAGE_DEFAULT_LIMIT;
+  const rawOffset = Number(data?.offset);
+  const offset =
+    Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : 0;
+
+  let scope: string;
+  if (collection === "sessions") {
+    scope = KV.sessions;
+  } else if (collection === "observations") {
+    const sessionId =
+      typeof data?.sessionId === "string" ? data.sessionId.trim() : "";
+    if (!sessionId) {
+      return {
+        success: false,
+        error: "collection=observations requires a non-empty sessionId",
+      };
+    }
+    scope = KV.observations(sessionId);
+  } else if (Object.prototype.hasOwnProperty.call(EXPORT_COLLECTION_SCOPES, collection)) {
+    scope = EXPORT_COLLECTION_SCOPES[collection]!;
+  } else {
+    return {
+      success: false,
+      error: `Unknown collection '${collection}'; supported: sessions, observations (requires sessionId), ${Object.keys(EXPORT_COLLECTION_SCOPES).join(", ")}`,
+    };
+  }
+
+  const items = await kv.list(scope);
+  const page = items.slice(offset, offset + limit);
+  const result: ExportCollectionPage = {
+    version: VERSION,
+    exportedAt: new Date().toISOString(),
+    collection,
+    items: page,
+    pagination: {
+      offset,
+      limit,
+      total: items.length,
+      hasMore: offset + limit < items.length,
+    },
+  };
+  const oversized = checkPayloadFrameSize(
+    result,
+    `reduce ?limit for the '${collection}' page`,
+  );
+  if (oversized) {
+    logger.warn("Collection export page exceeds transport frame limit", {
+      collection,
+      bytes: oversized.bytes,
+    });
+    return oversized;
+  }
+  logger.info("Collection export page", {
+    collection,
+    offset,
+    items: page.length,
+    total: items.length,
+  });
+  return result;
+}
+
 export class ExportBudget {
   bytes = 0;
 
@@ -105,7 +213,12 @@ export class ExportBudget {
 
 export function registerExportImportFunction(sdk: IIIClient, kv: StateKV): void {
   sdk.registerFunction("mem::export",
-    async (data?: { maxSessions?: number; offset?: number }) => {
+    async (data?: { maxSessions?: number; offset?: number; collection?: string; limit?: number; sessionId?: string }) => {
+      const rawCollection =
+        typeof data?.collection === "string" ? data.collection.trim() : "";
+      if (rawCollection) {
+        return exportCollectionPage(kv, rawCollection, data);
+      }
       const rawMax = Number(data?.maxSessions);
       const maxSessions = Number.isFinite(rawMax) && rawMax > 0 ? Math.min(Math.floor(rawMax), 1000) : undefined;
       const rawOffset = Number(data?.offset);

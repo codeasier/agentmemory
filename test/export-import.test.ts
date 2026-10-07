@@ -6,6 +6,7 @@ vi.mock("../src/logger.js", () => ({
 
 import { registerExportImportFunction } from "../src/functions/export-import.js";
 import { VERSION } from "../src/version.js";
+import { KV } from "../src/state/schema.js";
 import { getSearchIndex } from "../src/functions/search.js";
 import type {
   Session,
@@ -13,6 +14,7 @@ import type {
   Memory,
   SessionSummary,
   ExportData,
+  ExportCollectionPage,
 } from "../src/types.js";
 
 function mockKV() {
@@ -367,4 +369,177 @@ describe("import bounds graph provenance", () => {
     expect(s!.sourceObservationIds).toEqual(["obs_x"]);
     expect(e!.sourceObservationIds).toEqual(bloatedIds("eobs", 100).slice(-32));
   });
+});
+
+// Every collection the paged-backup path advertises, with the scope each
+// name must resolve to.
+const DOCUMENTED_COLLECTIONS: Array<[string, string]> = [
+  ["memories", KV.memories],
+  ["summaries", KV.summaries],
+  ["profiles", KV.profiles],
+  ["graphNodes", KV.graphNodes],
+  ["graphEdges", KV.graphEdges],
+  ["semanticMemories", KV.semantic],
+  ["proceduralMemories", KV.procedural],
+  ["actions", KV.actions],
+  ["actionEdges", KV.actionEdges],
+  ["routines", KV.routines],
+  ["signals", KV.signals],
+  ["checkpoints", KV.checkpoints],
+  ["sentinels", KV.sentinels],
+  ["sketches", KV.sketches],
+  ["crystals", KV.crystals],
+  ["facets", KV.facets],
+  ["lessons", KV.lessons],
+  ["insights", KV.insights],
+  ["accessLogs", KV.accessLog],
+];
+
+describe("export collection paging", () => {
+  let sdk: ReturnType<typeof mockSdk>;
+  let kv: ReturnType<typeof mockKV>;
+
+  beforeEach(async () => {
+    sdk = mockSdk();
+    kv = mockKV();
+    registerExportImportFunction(sdk as never, kv as never);
+
+    await kv.set("mem:sessions", "ses_1", testSession);
+    await kv.set("mem:sessions", "ses_2", { ...testSession, id: "ses_2" });
+    await kv.set("mem:obs:ses_1", "obs_1", testObs);
+    await kv.set("mem:obs:ses_1", "obs_2", { ...testObs, id: "obs_2" });
+    await kv.set("mem:obs:ses_1", "obs_3", { ...testObs, id: "obs_3" });
+    for (let i = 0; i < 5; i++) {
+      await kv.set("mem:semantic", `sem_${i}`, {
+        id: `sem_${i}`,
+        content: `semantic ${i}`,
+      });
+    }
+  });
+
+  it("pages a non-session collection with offset/limit", async () => {
+    const page1 = (await sdk.trigger("mem::export", {
+      collection: "semanticMemories",
+      offset: 0,
+      limit: 2,
+    })) as ExportCollectionPage;
+
+    expect(page1.items.length).toBe(2);
+    expect(page1.pagination.total).toBe(5);
+    expect(page1.pagination.hasMore).toBe(true);
+
+    const page3 = (await sdk.trigger("mem::export", {
+      collection: "semanticMemories",
+      offset: 4,
+      limit: 2,
+    })) as ExportCollectionPage;
+
+    expect(page3.items.length).toBe(1);
+    expect(page3.pagination.hasMore).toBe(false);
+  });
+
+  it("pages the sessions collection itself", async () => {
+    const page = (await sdk.trigger("mem::export", {
+      collection: "sessions",
+      offset: 1,
+      limit: 1,
+    })) as ExportCollectionPage & { items: { id: string }[] };
+
+    expect(page.collection).toBe("sessions");
+    expect(page.items.length).toBe(1);
+    expect(page.pagination.total).toBe(2);
+  });
+
+  it("pages observations per session via sessionId", async () => {
+    const page = (await sdk.trigger("mem::export", {
+      collection: "observations",
+      sessionId: "ses_1",
+      offset: 1,
+      limit: 5,
+    })) as ExportCollectionPage & { items: { id: string }[] };
+
+    expect(page.items.map((o) => o.id)).toEqual(["obs_2", "obs_3"]);
+    expect(page.pagination.total).toBe(3);
+    expect(page.pagination.hasMore).toBe(false);
+  });
+
+  it("rejects observations without a sessionId", async () => {
+    const result = (await sdk.trigger("mem::export", {
+      collection: "observations",
+    })) as { success: boolean; error: string };
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("sessionId");
+  });
+
+  it("rejects an unknown collection and lists the supported ones", async () => {
+    const result = (await sdk.trigger("mem::export", {
+      collection: "bogus",
+    })) as { success: boolean; error: string };
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Unknown collection 'bogus'");
+    for (const [collection] of DOCUMENTED_COLLECTIONS) {
+      expect(result.error).toContain(collection);
+    }
+    expect(result.error).toContain("observations");
+  });
+
+  it("collection pages carry the export version for reassembly", async () => {
+    const page = (await sdk.trigger("mem::export", {
+      collection: "memories",
+    })) as ExportCollectionPage;
+
+    expect(page.version).toBe(VERSION);
+    expect(page.exportedAt).toBeDefined();
+    expect(page.items.length).toBe(0);
+  });
+
+  it("collection mode wins over maxSessions when both are present", async () => {
+    const page = (await sdk.trigger("mem::export", {
+      collection: "sessions",
+      maxSessions: 1,
+    })) as ExportCollectionPage;
+
+    expect(page.collection).toBe("sessions");
+    expect(page.pagination.total).toBe(2);
+  });
+
+  it("defaults to a 1000-item page and caps an explicit limit at 10000", async () => {
+    const dflt = (await sdk.trigger("mem::export", {
+      collection: "semanticMemories",
+    })) as ExportCollectionPage;
+    expect(dflt.pagination.limit).toBe(1000);
+
+    const capped = (await sdk.trigger("mem::export", {
+      collection: "semanticMemories",
+      limit: 25_000,
+    })) as ExportCollectionPage;
+    expect(capped.pagination.limit).toBe(10_000);
+    expect(capped.items.length).toBe(5);
+  });
+
+  it.each(DOCUMENTED_COLLECTIONS)(
+    "serves a page for the %s collection",
+    async (collection, scope) => {
+      const seeded = { id: `${collection}_1`, marker: collection };
+      await kv.set(scope, seeded.id, seeded);
+      const scopeItems = await kv.list(scope);
+
+      const page = (await sdk.trigger("mem::export", {
+        collection,
+        limit: 100,
+      })) as ExportCollectionPage;
+
+      expect(page.collection).toBe(collection);
+      expect(page.items).toContainEqual(seeded);
+      expect(page.items.length).toBe(scopeItems.length);
+      expect(page.pagination).toMatchObject({
+        offset: 0,
+        limit: 100,
+        total: scopeItems.length,
+        hasMore: false,
+      });
+    },
+  );
 });
