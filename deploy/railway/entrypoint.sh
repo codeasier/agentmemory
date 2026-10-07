@@ -78,7 +78,7 @@ workers:
           file_path: /data/stream_store
   - name: iii-observability
     config:
-      enabled: true
+      enabled: false
       service_name: agentmemory
       exporter: memory
       sampling_ratio: 0.1

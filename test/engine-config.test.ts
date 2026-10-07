@@ -354,3 +354,30 @@ describe("clearPersistedBuiltinConfig", () => {
     ).toThrow(/http\.yaml/);
   });
 });
+
+function shippedConfig(file: string): string {
+  return readFileSync(join(import.meta.dirname, "..", file), "utf8");
+}
+
+// The observability worker keeps traces, metrics and logs in engine memory,
+// so every shipped config (bundled YAML plus the container entrypoints that
+// render their own config) must leave it off.
+describe("bundled iii engine config", () => {
+  it.each([
+    "iii-config.yaml",
+    "iii-config.docker.yaml",
+    "deploy/fly/entrypoint.sh",
+    "deploy/render/entrypoint.sh",
+    "deploy/railway/entrypoint.sh",
+    "deploy/coolify/entrypoint.sh",
+  ])("keeps the in-memory observability store disabled in %s", (file) => {
+    const observability = shippedConfig(file)
+      .split("- name: iii-observability")[1]
+      ?.split("- name:")[0];
+
+    expect(observability).toBeDefined();
+    expect(observability).toMatch(/enabled:\s*false/);
+    expect(observability).toMatch(/sampling_ratio:\s*0\.1/);
+    expect(observability).toMatch(/logs_console_output:\s*false/);
+  });
+});
