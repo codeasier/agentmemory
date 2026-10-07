@@ -79,7 +79,7 @@ import { renderSplash } from "./cli/splash.js";
 import { isFirstRun, readPrefs, resetPrefs, writePrefs } from "./cli/preferences.js";
 import { runOnboarding } from "./cli/onboarding.js";
 import { setBootVerbose } from "./logger.js";
-import { hydrateProcessEnvFromFile } from "./config.js";
+import { getStateSaveIntervalMs, hydrateProcessEnvFromFile } from "./config.js";
 import { VERSION } from "./version.js";
 import { getAllTools, ESSENTIAL_TOOLS } from "./mcp/tools-registry.js";
 import { knownAgents } from "./cli/connect/index.js";
@@ -1466,6 +1466,7 @@ function prepareEngineLaunch(configPath: string): {
         viewerPort: getConfiguredViewerPort(),
         enginePort: getEnginePort(),
       },
+      saveIntervalMs: getStateSaveIntervalMs(),
     };
     const rewritten = bundledConfig
       ? rewriteBundledConfig(

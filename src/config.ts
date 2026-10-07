@@ -381,6 +381,17 @@ export function isGraphExtractionEnabled(): boolean {
   return getMergedEnv()["GRAPH_EXTRACTION_ENABLED"] === "true";
 }
 
+// Ported from upstream b3d6cf5 (rohitg00/agentmemory#1457). Optional override
+// for the iii file_based kv save cadence; undefined keeps the value the engine
+// config renderer injects (AGENTMEMORY_STATE_SAVE_INTERVAL_MS, 2000 ms).
+export function getStateSaveIntervalMs(): number | undefined {
+  const raw = safeParseInt(
+    getMergedEnv()["AGENTMEMORY_STATE_SAVE_INTERVAL_MS"],
+    0,
+  );
+  return raw > 0 ? raw : undefined;
+}
+
 export function isIncrementalGraphExtractionEnabled(): boolean {
   return getMergedEnv()["AGENTMEMORY_GRAPH_INCREMENTAL_EXTRACT"] !== "false";
 }

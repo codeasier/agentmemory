@@ -188,6 +188,24 @@ export function legacyDataMigrations(
   ];
 }
 
-export function engineChildEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return { ...base, III_TELEMETRY_ENABLED: base["III_TELEMETRY_ENABLED"] ?? "false" };
+// Ported from upstream b3d6cf5 (rohitg00/agentmemory#1457). The iii engine's
+// file_based KV deep-copies a scope's serde_json tree per operation; freed
+// churn stays inside glibc's per-thread arenas instead of returning to the OS.
+// On this host that showed up as five exactly 64 MiB-aligned anonymous
+// mappings (HEAP_MAX_SIZE non-main arenas) against a 20-core arena ceiling of
+// 160. Capping arenas at 2 bounds that retention; the user's value wins.
+export const ENGINE_MALLOC_ARENA_MAX = "2";
+
+export function engineChildEnv(
+  base: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...base,
+    III_TELEMETRY_ENABLED: base["III_TELEMETRY_ENABLED"] ?? "false",
+  };
+  if (platform === "linux" && !base["MALLOC_ARENA_MAX"]) {
+    env["MALLOC_ARENA_MAX"] = ENGINE_MALLOC_ARENA_MAX;
+  }
+  return env;
 }

@@ -123,6 +123,56 @@ describe("renderEngineConfig", () => {
       expect(names).not.toContain(bare);
     }
   });
+
+  // Ported from upstream b3d6cf5 (rohitg00/agentmemory#1457): the engine's own
+  // default is 5000 ms; the shipped config and every render pin 2000 ms, and
+  // the override still wins. The key must land in the adapter block.
+  it("pins the file-backed save cadence without ports", () => {
+    const source = shippedConfig("iii-config.yaml");
+
+    const rendered = renderEngineConfig(source, { dataDir: "/tmp/agentmemory" });
+    const intervals = [...rendered.matchAll(/^(\s*)save_interval_ms: (\d+)$/gm)];
+
+    expect(intervals).toHaveLength(2);
+    expect(intervals.map((m) => m[2])).toEqual(["2000", "2000"]);
+    expect(rendered).toMatch(/store_method: file_based\n\s+save_interval_ms: 2000/);
+    for (const match of intervals) {
+      expect(rendered).toContain(`${match[1]}store_method: file_based`);
+    }
+  });
+
+  it("honours AGENTMEMORY_STATE_SAVE_INTERVAL_MS", () => {
+    const source = shippedConfig("iii-config.yaml");
+
+    const rendered = renderEngineConfig(source, {
+      dataDir: "/tmp/agentmemory",
+      saveIntervalMs: 750,
+    });
+
+    expect([...rendered.matchAll(/save_interval_ms: (\d+)/g)].map((m) => m[1])).toEqual([
+      "750",
+      "750",
+    ]);
+  });
+
+  it("adds the cadence to a file-backed config that never had one", () => {
+    const withoutCadence = [
+      "workers:",
+      "  - name: iii-state",
+      "    config:",
+      "      adapter:",
+      "        name: kv",
+      "        config:",
+      "          store_method: file_based",
+      "          file_path: /tmp/state_store.db",
+    ].join("\n");
+
+    const rendered = renderEngineConfig(withoutCadence, { dataDir: "/tmp/agentmemory" });
+
+    expect(rendered).toContain(
+      "          store_method: file_based\n          save_interval_ms: 2000\n",
+    );
+  });
 });
 
 describe("clearPersistedBuiltinConfig", () => {
