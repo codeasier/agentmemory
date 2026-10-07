@@ -15,6 +15,7 @@ import {
   buildProceduralExtractionPrompt,
 } from "../prompts/consolidation.js";
 import { recordAudit } from "./audit.js";
+import { boundSources } from "./graph.js";
 import { CONSOLIDATION_LAST_RUN_KEY } from "./consolidation-status.js";
 import { getConsolidationDecayDays, isConsolidationEnabled } from "../config.js";
 import { logger } from "../logger.js";
@@ -143,7 +144,10 @@ export function registerConsolidationPipelineFunction(
                   id: generateId("sem"),
                   fact,
                   confidence,
-                  sourceSessionIds: recentSummaries.map((s) => s.sessionId),
+                  sourceSessionIds: boundSources(
+                    [],
+                    recentSummaries.map((s) => s.sessionId).reverse(),
+                  ),
                   sourceMemoryIds: [],
                   accessCount: 1,
                   lastAccessedAt: now,

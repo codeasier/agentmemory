@@ -11,6 +11,7 @@ import type {
   MemoryProvider,
 } from "../types.js";
 import { recordAudit } from "./audit.js";
+import { boundSources } from "./graph.js";
 import { REFLECT_SYSTEM, buildReflectPrompt } from "../prompts/reflect.js";
 
 interface ConceptCluster {
@@ -291,10 +292,10 @@ export function registerReflectFunctions(
                 content,
                 confidence,
                 reinforcements: 0,
-                sourceConceptCluster: conceptNames,
-                sourceMemoryIds: cluster.factIds,
-                sourceLessonIds: cluster.lessonIds,
-                sourceCrystalIds: cluster.crystalIds,
+                sourceConceptCluster: boundSources([], conceptNames),
+                sourceMemoryIds: boundSources([], cluster.factIds),
+                sourceLessonIds: boundSources([], cluster.lessonIds),
+                sourceCrystalIds: boundSources([], cluster.crystalIds),
                 project: data?.project,
                 tags: conceptNames,
                 createdAt: now,

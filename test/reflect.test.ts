@@ -5,6 +5,7 @@ vi.mock("../src/logger.js", () => ({
 }));
 
 import { registerReflectFunctions } from "../src/functions/reflect.js";
+import { MAX_GRAPH_SOURCE_OBSERVATIONS } from "../src/functions/graph.js";
 import type { Insight, GraphNode, GraphEdge, SemanticMemory, Lesson, Crystal } from "../src/types.js";
 
 function mockKV() {
@@ -250,6 +251,55 @@ describe("Reflect", () => {
 
       expect(result.success).toBe(true);
       expect(result.newInsights).toBe(0);
+    });
+
+    it("caps insight provenance at the graph source cap while keeping the freshest ids", async () => {
+      await kv.set("mem:graph:nodes", "node_security", makeConceptNode("security"));
+      await kv.set("mem:graph:nodes", "node_validation", makeConceptNode("validation"));
+      await kv.set("mem:graph:edges", "edge_1", makeEdge("security", "validation"));
+
+      for (let i = 0; i < 40; i++) {
+        const pad = i.toString().padStart(2, "0");
+        await kv.set(
+          "mem:semantic",
+          `sem_${pad}`,
+          makeSemantic(`security fact ${pad}`, `sem_${pad}`),
+        );
+        await kv.set("mem:lessons", `lsn_${pad}`, {
+          ...makeLesson(`security lesson ${pad}`, ["security"]),
+          id: `lsn_${pad}`,
+        });
+        await kv.set("mem:crystals", `crys_${pad}`, {
+          ...makeCrystal(`security crystal ${pad}`, [`security topic ${pad}`]),
+          id: `crys_${pad}`,
+        });
+      }
+
+      const result = (await sdk.trigger("mem::reflect", {})) as {
+        success: boolean;
+        newInsights: number;
+      };
+
+      expect(result.success).toBe(true);
+      expect(result.newInsights).toBeGreaterThan(0);
+
+      const insights = await kv.list<Insight>("mem:insights");
+      expect(insights.length).toBeGreaterThan(0);
+      for (const insight of insights) {
+        expect(insight.sourceMemoryIds).toHaveLength(
+          MAX_GRAPH_SOURCE_OBSERVATIONS,
+        );
+        expect(insight.sourceLessonIds).toHaveLength(
+          MAX_GRAPH_SOURCE_OBSERVATIONS,
+        );
+        expect(insight.sourceCrystalIds).toHaveLength(
+          MAX_GRAPH_SOURCE_OBSERVATIONS,
+        );
+        expect(insight.sourceMemoryIds[0]).toBe("sem_08");
+        expect(insight.sourceMemoryIds.at(-1)).toBe("sem_39");
+        expect(insight.sourceLessonIds.at(-1)).toBe("lsn_39");
+        expect(insight.sourceCrystalIds.at(-1)).toBe("crys_39");
+      }
     });
   });
 

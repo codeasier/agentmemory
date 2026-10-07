@@ -201,6 +201,30 @@ describe("Consolidation Pipeline", () => {
     expect(stored[0].confidence).toBe(0.9);
   });
 
+  it("keeps the freshest summary session ids, newest last", async () => {
+    const provider = {
+      name: "test",
+      compress: vi.fn(),
+      summarize: vi.fn().mockResolvedValue(
+        `<facts><fact confidence="0.9">TypeScript is the primary language</fact></facts>`,
+      ),
+    };
+    registerConsolidationPipelineFunction(sdk as never, kv as never, provider as never);
+
+    for (let i = 0; i < 25; i++) {
+      await kv.set("mem:summaries", `ses_${i}`, makeSummary(i));
+    }
+
+    await sdk.trigger("mem::consolidate-pipeline", { tier: "semantic" });
+
+    const stored = await kv.list<SemanticMemory>("mem:semantic");
+    expect(stored.length).toBe(1);
+    expect(stored[0].sourceSessionIds).toHaveLength(20);
+    expect(new Set(stored[0].sourceSessionIds).size).toBe(20);
+    expect(stored[0].sourceSessionIds[0]).toBe("ses_19");
+    expect(stored[0].sourceSessionIds.at(-1)).toBe("ses_0");
+  });
+
   it("with enough patterns, creates procedural memories from provider response", async () => {
     const provider = {
       name: "test",
