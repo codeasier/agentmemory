@@ -436,6 +436,14 @@ export function isGraphExtractionEnabled(): boolean {
   return getMergedEnv()["GRAPH_EXTRACTION_ENABLED"] === "true";
 }
 
+// Per-turn graph extraction normally dispatches only the observations added
+// since the last successful pass (triggers/events.ts). Whole-session dispatch
+// stays available for the LLM entity-merging path, which relies on seeing the
+// full session every time.
+export function isIncrementalGraphExtractionEnabled(): boolean {
+  return getMergedEnv()["AGENTMEMORY_GRAPH_INCREMENTAL_EXTRACT"] !== "false";
+}
+
 export function getGraphBatchSize(): number {
   return safeParseInt(getMergedEnv()["GRAPH_EXTRACTION_BATCH_SIZE"], 10);
 }
