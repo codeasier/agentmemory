@@ -11,6 +11,7 @@ vi.mock("../src/config.js", () => ({
   getConsolidationCooldownMs: vi.fn(() => 300000),
   isIncrementalGraphExtractionEnabled: vi.fn(() => true),
   getGraphExtractionRetryMs: vi.fn(() => 300000),
+  detectLlmProviderKind: vi.fn(() => "noop"),
 }));
 
 vi.mock("../src/functions/slots.js", () => ({
@@ -20,6 +21,7 @@ vi.mock("../src/functions/slots.js", () => ({
 import { registerEventTriggers } from "../src/triggers/events.js";
 import {
   getGraphExtractionRetryMs,
+  isConsolidationEnabled,
   isIncrementalGraphExtractionEnabled,
 } from "../src/config.js";
 import { logger } from "../src/logger.js";
@@ -86,6 +88,7 @@ type StoppedHandler = (data: {
 function mockSdk(opts?: {
   rejectGraphExtract?: () => boolean;
   failGraphExtract?: () => boolean;
+  holdGraphExtract?: Promise<void>;
 }) {
   const handlers = new Map<string, StoppedHandler>();
   const trigger = vi.fn(
@@ -97,6 +100,7 @@ function mockSdk(opts?: {
         throw new Error("dispatch refused");
       }
       if (input.function_id === "mem::graph-extract") {
+        if (opts?.holdGraphExtract) await opts.holdGraphExtract;
         return opts?.failGraphExtract?.()
           ? { success: false, error: "graph persistence failed" }
           : { success: true };
@@ -130,9 +134,14 @@ function batches(trigger: ReturnType<typeof vi.fn>): string[][] {
     );
 }
 
+function functionIds(trigger: ReturnType<typeof vi.fn>): string[] {
+  return trigger.mock.calls.map((c) => (c[0] as { function_id: string }).function_id);
+}
+
 function harness(opts?: {
   rejectGraphExtract?: () => boolean;
   failGraphExtract?: () => boolean;
+  holdGraphExtract?: Promise<void>;
 }) {
   const kv = persistentKV();
   const { sdk, handlers, trigger } = mockSdk(opts);
@@ -160,6 +169,7 @@ describe("event::session::stopped graph-extract is incremental", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(isIncrementalGraphExtractionEnabled).mockReturnValue(true);
+    vi.mocked(isConsolidationEnabled).mockReturnValue(false);
   });
 
   it("hands each turn only the observations captured since the last extract", async () => {
@@ -232,6 +242,7 @@ describe("graph-extract watermark never skips an observation", () => {
     vi.clearAllMocks();
     vi.mocked(isIncrementalGraphExtractionEnabled).mockReturnValue(true);
     vi.mocked(getGraphExtractionRetryMs).mockReturnValue(300000);
+    vi.mocked(isConsolidationEnabled).mockReturnValue(false);
   });
 
   it("backs off partial LLM failures without losing the batch after recovery", async () => {
@@ -517,5 +528,95 @@ describe("graph-extract watermark never skips an observation", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("graph-extract watermark boundaries", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(isIncrementalGraphExtractionEnabled).mockReturnValue(true);
+    vi.mocked(getGraphExtractionRetryMs).mockReturnValue(300000);
+    vi.mocked(isConsolidationEnabled).mockReturnValue(false);
+  });
+
+  it("re-merges only its own future-stamped observation instead of a full re-extract", async () => {
+    // Imported and replayed sessions can carry timestamps above wall-clock
+    // time. Such an observation never satisfies t <= watermark, so without the
+    // boundary it falls out of the extracted half, trips the digest mismatch on
+    // every turn, and both re-extracts everything and logs stale forever.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:01:00.000Z"));
+      const h = harness();
+      h.land(obs("a", "2026-01-01T00:00:01.000Z"), obs("f", "2026-01-01T02:00:00.000Z"));
+      await h.stop();
+
+      // Clamped to wall-clock, so the future stamp cannot pin the watermark
+      // above every later real observation.
+      expect(h.session().graphExtractedAt).toBe("2026-01-01T00:01:00.000Z");
+
+      await h.stop();
+      expect(batches(h.trigger)).toEqual([["a", "f"], ["f"]]);
+      expect(logger.info).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("throttles the stale-watermark log per session", async () => {
+    const h = harness();
+    h.land(obs("a", "2026-01-01T00:00:01.000Z"), obs("c", "2026-01-01T00:00:03.000Z"));
+    await h.stop();
+
+    // Each turn evicts the newest observation and lands a different one on the
+    // same millisecond, so the digest keeps mismatching and every stop is a
+    // stale full re-extract. The signal must not repeat per turn.
+    h.drop("c");
+    h.land(obs("e", "2026-01-01T00:00:03.000Z"));
+    await h.stop();
+    h.drop("e");
+    h.land(obs("g", "2026-01-01T00:00:03.000Z"));
+    await h.stop();
+
+    expect(batches(h.trigger)).toEqual([["a", "c"], ["a", "e"], ["a", "g"]]);
+    const staleLogs = vi
+      .mocked(logger.info)
+      .mock.calls.filter((call) => call[0] === STALE);
+    expect(staleLogs.length).toBe(1);
+  });
+});
+
+// Reflection reads the graph, so the consolidation fan-out must not race the
+// extraction that writes it. The client Stop hook is unaffected: it POSTs
+// /session/end, which fires event::session::stopped with TriggerAction.Void.
+describe("extract-then-consolidate ordering on session stop", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(isIncrementalGraphExtractionEnabled).mockReturnValue(true);
+    vi.mocked(getGraphExtractionRetryMs).mockReturnValue(300000);
+    vi.mocked(isConsolidationEnabled).mockReturnValue(true);
+  });
+
+  it("starts the consolidation fan-out only after the extraction resolves", async () => {
+    let releaseExtract!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseExtract = resolve;
+    });
+    const h = harness({ holdGraphExtract: held });
+    h.land(obs("a", "2026-01-01T00:00:01.000Z"));
+
+    const stopped = h.stop();
+    await vi.waitFor(() => expect(batches(h.trigger).length).toBe(1));
+    // The extraction is in flight; consolidation has not been dispatched yet.
+    expect(functionIds(h.trigger)).not.toContain("mem::consolidate-pipeline");
+
+    releaseExtract();
+    await stopped;
+
+    const ids = functionIds(h.trigger);
+    expect(ids).toContain("mem::consolidate-pipeline");
+    expect(ids.indexOf("mem::graph-extract")).toBeLessThan(
+      ids.indexOf("mem::consolidate-pipeline"),
+    );
   });
 });
