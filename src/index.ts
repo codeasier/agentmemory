@@ -129,6 +129,12 @@ import { ensureServerSecret, explicitSecret, secretFilePath } from "./secret-sto
 import { mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 
+// Duplicate vector rows detected while loading the buckets are deleted
+// after the worker reports ready: the deletes are pure cleanup, and doing
+// them during startup pushed boot past the CLI's ready watchdog on stores
+// whose bucket list is slow to list.
+const ORPHAN_VECTOR_FLUSH_DELAY_MS = 60_000;
+
 function workerPidfilePath(): string {
   return runtimeMetadataPath("worker.pid");
 }
@@ -450,6 +456,8 @@ async function main() {
 
   const indexPersistence = new IndexPersistence(kv, vectorIndex);
   setIndexPersistence(indexPersistence);
+  let orphanFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  let shuttingDown = false;
 
   const loaded = await indexPersistence.load().catch((err) => {
     console.warn(`[agentmemory] Failed to load persisted vector index:`, err);
@@ -611,6 +619,19 @@ async function main() {
     `MCP surface (opt-in via \`npx @agentmemory/mcp\`): ${getAllTools().length} tools · 6 resources · 3 prompts`,
   );
 
+  if (indexPersistence.status().orphanDeletes > 0) {
+    orphanFlushTimer = setTimeout(() => {
+      orphanFlushTimer = null;
+      if (shuttingDown) return;
+      indexPersistence.save().catch((err) => {
+        bootWarn(
+          `Failed to flush orphan vector rows: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }, ORPHAN_VECTOR_FLUSH_DELAY_MS);
+    orphanFlushTimer.unref();
+  }
+
   void (async () => {
     try {
       const drained = await capture.drainLocalSpool();
@@ -731,6 +752,11 @@ async function main() {
   }
 
   const shutdown = async () => {
+    shuttingDown = true;
+    if (orphanFlushTimer) {
+      clearTimeout(orphanFlushTimer);
+      orphanFlushTimer = null;
+    }
     console.log(`\n[agentmemory] Shutting down...`);
     const hardExit = setTimeout(() => {
       console.warn(
