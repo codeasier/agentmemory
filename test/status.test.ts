@@ -130,7 +130,7 @@ describe("evaluateStatus", () => {
 
   it("reports a vector count shortfall from the last save as a warning", () => {
     const report = evaluateStatus(
-      inputs({ indexPersistence: { saveIntervalMs: 600_000, saving: false, buckets: 3, pendingChanges: 0, vector: null, vectorCountShortfall: { expected: 100, loaded: 40 } } }),
+      inputs({ indexPersistence: { saveIntervalMs: 600_000, saving: false, buckets: 3, pendingChanges: 0, orphanDeletes: 0, vector: null, vectorCountShortfall: { expected: 100, loaded: 40 } } }),
     );
     expect(report.status).toBe("warn");
     const problem = report.problems.find((p) => p.code === "index-vector-count-shortfall");
@@ -140,7 +140,7 @@ describe("evaluateStatus", () => {
   it("reports absent and partial vector recovery as paused until explicitly opted in", () => {
     const report = evaluateStatus(inputs({
       index: { ...inputs().index, pendingVectorBackfill: 60, vectorBackfillState: "waiting-for-opt-in" },
-      indexPersistence: { saveIntervalMs: 600_000, saving: false, buckets: 3, pendingChanges: 0, vector: null, vectorCountShortfall: { expected: 100, loaded: 40 } },
+      indexPersistence: { saveIntervalMs: 600_000, saving: false, buckets: 3, pendingChanges: 0, orphanDeletes: 0, vector: null, vectorCountShortfall: { expected: 100, loaded: 40 } },
     }));
     for (const problem of report.problems) {
       expect(problem.fix).toContain("Backfill is paused.");
@@ -263,6 +263,7 @@ describe("status page wording", () => {
           saving: false,
           buckets: 1,
           pendingChanges: 1,
+          orphanDeletes: 0,
           vector: { lastSavedAt: "2026-09-24T11:59:00.000Z", dirtySince: null, lastError: null, lastErrorAt: null },
           vectorCountShortfall: null,
         },
@@ -519,6 +520,7 @@ describe("vector durability rows", () => {
           saving: false,
           buckets: 2,
           pendingChanges: 3,
+          orphanDeletes: 0,
           vector: { lastSavedAt: "2026-09-24T11:59:00.000Z", dirtySince: null, lastError: null, lastErrorAt: null },
           vectorCountShortfall: null,
           pendingLog: 3,
