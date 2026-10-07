@@ -18,6 +18,9 @@ export interface Session {
   // digest is needed. Absent on records written before this existed.
   graphExtractedAt?: string;
   graphExtractedDigest?: string;
+  // Epoch ms before which a failed extraction must not be retried. 0 (or
+  // absent) means no cooldown is pending.
+  graphExtractRetryAt?: number;
 }
 
 export interface ProjectSessionIndexEntry {

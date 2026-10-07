@@ -9,6 +9,7 @@ import {
   detectLlmProviderKind,
   getAgentId,
   getConsolidationCooldownMs,
+  getGraphExtractionRetryMs,
   isAgentScopeIsolated,
   isConsolidationEnabled,
   isIncrementalGraphExtractionEnabled,
@@ -150,7 +151,13 @@ export function registerEventTriggers(sdk: IIIClient, kv: StateKV): void {
         KV.observations(data.sessionId),
       );
       const compressed = observations.filter((o) => o.title);
-      if (compressed.length > 0) {
+      const session = compressed.length > 0
+        ? await kv.get<Session>(KV.sessions, data.sessionId).catch(() => null)
+        : null;
+      if (
+        compressed.length > 0 &&
+        !(session?.graphExtractRetryAt && Date.now() < session.graphExtractRetryAt)
+      ) {
         // /session/end is posted by the per-turn Stop hook, so this handler
         // runs every agent turn. Re-sending the whole session each time makes
         // persistGraphDelta re-merge turns 1..N-1 on turn N — quadratic engine
@@ -165,9 +172,6 @@ export function registerEventTriggers(sdk: IIIClient, kv: StateKV): void {
         // remove one at any point. Whenever the already-extracted half no
         // longer fingerprints the same, we re-send the whole session rather
         // than skip it. Missing a memory is worse than re-merging one.
-        const session = await kv
-          .get<Session>(KV.sessions, data.sessionId)
-          .catch(() => null);
         const at = session?.graphExtractedAt;
         const mark = session?.graphExtractedDigest;
         const incremental = isIncrementalGraphExtractionEnabled();
@@ -199,35 +203,56 @@ export function registerEventTriggers(sdk: IIIClient, kv: StateKV): void {
           }
         }
         if (batch.length > 0) {
-          // Confirmed dispatch, not fire-and-forget: the watermark below may
-          // only advance for a batch the extraction actually merged, or a
-          // failed pass would drop that batch from every later delta.
-          const result = await sdk.trigger<
-            { observations: CompressedObservation[] },
-            { success: boolean; error?: string }
-          >({
-            function_id: "mem::graph-extract",
-            payload: { observations: batch },
-          });
-          if (result?.success !== true) {
-            throw new Error(
-              result?.error ?? "graph extraction did not confirm success",
-            );
-          }
-          if (persistWatermark) {
-            const newest = times.reduce((max, time) => Math.max(max, time), 0);
+          try {
+            // Confirmed dispatch, not fire-and-forget: the watermark below may
+            // only advance for a batch the extraction actually merged, or a
+            // failed pass would drop that batch from every later delta.
+            const result = await sdk.trigger<
+              { observations: CompressedObservation[] },
+              { success: boolean; error?: string }
+            >({
+              function_id: "mem::graph-extract",
+              payload: { observations: batch },
+            });
+            if (result?.success !== true) {
+              throw new Error(
+                result?.error ?? "graph extraction did not confirm success",
+              );
+            }
+            if (persistWatermark || session?.graphExtractRetryAt) {
+              const newest = times.reduce((max, time) => Math.max(max, time), 0);
+              await kv.update(KV.sessions, data.sessionId, [
+                ...(persistWatermark
+                  ? [
+                      {
+                        type: "set",
+                        path: "graphExtractedAt",
+                        value: new Date(newest).toISOString(),
+                      },
+                      {
+                        type: "set",
+                        path: "graphExtractedDigest",
+                        value: observationFingerprint(compressed),
+                      },
+                    ]
+                  : []),
+                ...(session?.graphExtractRetryAt
+                  ? [{ type: "set", path: "graphExtractRetryAt", value: 0 }]
+                  : []),
+              ]);
+            }
+          } catch (err) {
+            // Leave the watermark alone: the outstanding batch is retried in
+            // full once the cooldown expires, instead of being lost to a delta
+            // computed from an extraction that never landed.
             await kv.update(KV.sessions, data.sessionId, [
               {
                 type: "set",
-                path: "graphExtractedAt",
-                value: new Date(newest).toISOString(),
-              },
-              {
-                type: "set",
-                path: "graphExtractedDigest",
-                value: observationFingerprint(compressed),
+                path: "graphExtractRetryAt",
+                value: Date.now() + getGraphExtractionRetryMs(),
               },
             ]);
+            throw err;
           }
         }
       }

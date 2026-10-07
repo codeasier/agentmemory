@@ -12,6 +12,7 @@ vi.mock("../src/config.js", () => ({
   getConsolidationCooldownMs: vi.fn(() => 300000),
   detectLlmProviderKind: vi.fn(() => "noop"),
   isIncrementalGraphExtractionEnabled: vi.fn(() => true),
+  getGraphExtractionRetryMs: vi.fn(() => 300000),
 }));
 
 vi.mock("../src/functions/slots.js", () => ({

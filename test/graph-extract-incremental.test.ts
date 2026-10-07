@@ -10,6 +10,7 @@ vi.mock("../src/config.js", () => ({
   isConsolidationEnabled: vi.fn(() => false),
   getConsolidationCooldownMs: vi.fn(() => 300000),
   isIncrementalGraphExtractionEnabled: vi.fn(() => true),
+  getGraphExtractionRetryMs: vi.fn(() => 300000),
 }));
 
 vi.mock("../src/functions/slots.js", () => ({
@@ -17,7 +18,10 @@ vi.mock("../src/functions/slots.js", () => ({
 }));
 
 import { registerEventTriggers } from "../src/triggers/events.js";
-import { isIncrementalGraphExtractionEnabled } from "../src/config.js";
+import {
+  getGraphExtractionRetryMs,
+  isIncrementalGraphExtractionEnabled,
+} from "../src/config.js";
 import { logger } from "../src/logger.js";
 
 const STALE = "graph-extract watermark stale, re-extracting session";
@@ -227,6 +231,39 @@ describe("graph-extract watermark never skips an observation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(isIncrementalGraphExtractionEnabled).mockReturnValue(true);
+    vi.mocked(getGraphExtractionRetryMs).mockReturnValue(300000);
+  });
+
+  it("backs off partial LLM failures without losing the batch after recovery", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:01:00.000Z"));
+      let fail = true;
+      const h = harness({ failGraphExtract: () => fail });
+      h.land(obs("a", "2026-01-01T00:00:01.000Z"));
+      await h.stop();
+      expect(h.session().graphExtractedAt).toBeUndefined();
+      expect(h.session().graphExtractRetryAt).toBe(Date.now() + 300000);
+
+      // Stops inside the cooldown do not re-dispatch the outstanding batch...
+      h.land(obs("b", "2026-01-01T00:00:02.000Z"));
+      await h.stop();
+      await h.stop();
+      expect(batches(h.trigger)).toEqual([["a"]]);
+
+      // ...and the retry after it sends the whole outstanding range, so the
+      // observation that landed during the cooldown is not skipped.
+      fail = false;
+      vi.advanceTimersByTime(300000);
+      await h.stop();
+      expect(batches(h.trigger)).toEqual([["a"], ["a", "b"]]);
+      expect(h.session().graphExtractRetryAt).toBe(0);
+      h.land(obs("c", "2026-01-01T00:00:03.000Z"));
+      await h.stop();
+      expect(batches(h.trigger)[2]).toEqual(["c"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("extracts the whole session on the first stop, when no watermark exists", async () => {
@@ -356,17 +393,22 @@ describe("graph-extract watermark never skips an observation", () => {
   });
 
   it("does not advance the watermark when extraction returns a failure", async () => {
-    let fail = true;
-    const h = harness({ failGraphExtract: () => fail });
-    h.land(obs("a", "2026-01-01T00:00:01.000Z"));
+    vi.useFakeTimers();
+    try {
+      let fail = true;
+      const h = harness({ failGraphExtract: () => fail });
+      h.land(obs("a", "2026-01-01T00:00:01.000Z"));
 
-    await h.stop();
-    expect(h.session().graphExtractedAt).toBeUndefined();
+      await h.stop();
+      expect(h.session().graphExtractedAt).toBeUndefined();
+      fail = false;
+      vi.advanceTimersByTime(300000);
+      await h.stop();
 
-    fail = false;
-    await h.stop();
-
-    expect(batches(h.trigger)).toEqual([["a"], ["a"]]);
-    expect(h.session().graphExtractedAt).toBe("2026-01-01T00:00:01.000Z");
+      expect(batches(h.trigger)).toEqual([["a"], ["a"]]);
+      expect(h.session().graphExtractedAt).toBe("2026-01-01T00:00:01.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

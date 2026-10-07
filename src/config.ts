@@ -448,6 +448,18 @@ export function getGraphBatchSize(): number {
   return safeParseInt(getMergedEnv()["GRAPH_EXTRACTION_BATCH_SIZE"], 10);
 }
 
+// Delay before a session whose graph extraction failed is retried. A failed
+// pass (provider error, or a partial LLM failure that reports success: false)
+// leaves the batch outstanding and stamps this cooldown on the session record;
+// stops inside the window skip extraction instead of re-dispatching the same
+// batch every turn.
+export function getGraphExtractionRetryMs(): number {
+  return parsePositiveIntervalMs(
+    getEnvVar("AGENTMEMORY_GRAPH_EXTRACT_RETRY_MS"),
+    300000,
+  );
+}
+
 // window for the smart-search followup-rate diagnostic. A second
 // search arriving within this many seconds (with disjoint results)
 // counts as a "follow-up" — a directional signal that the first result
