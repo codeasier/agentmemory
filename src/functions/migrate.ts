@@ -139,6 +139,7 @@ export function registerMigrateFunction(sdk: IIIClient, kv: StateKV): void {
         const sessions = db
           .prepare("SELECT * FROM sessions ORDER BY created_at DESC")
           .all() as any[];
+        const sessionObservationCounts = new Map<string, number>();
         for (const row of sessions) {
           const session: Session = {
             id: row.session_id || row.id,
@@ -158,6 +159,7 @@ export function registerMigrateFunction(sdk: IIIClient, kv: StateKV): void {
             startedAt: session.startedAt,
             ...(session.agentId ? { agentId: session.agentId } : {}),
           }).catch(() => {});
+          sessionObservationCounts.set(session.id, 0);
           sessionCount++;
         }
 
@@ -194,7 +196,21 @@ export function registerMigrateFunction(sdk: IIIClient, kv: StateKV): void {
             importance: row.importance || 5,
           };
           await kv.set(KV.observations(sessionId), obs.id, obs);
+          if (sessionObservationCounts.has(sessionId)) {
+            sessionObservationCounts.set(
+              sessionId,
+              sessionObservationCounts.get(sessionId)! + 1,
+            );
+          }
           obsCount++;
+        }
+
+        for (const [sessionId, observationCount] of sessionObservationCounts) {
+          await withKeyedLock(`obs:${sessionId}`, () =>
+            kv.update(KV.sessions, sessionId, [
+              { type: "set", path: "observationCount", value: observationCount },
+            ]),
+          );
         }
 
         let summaries: any[] = [];

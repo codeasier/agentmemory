@@ -225,6 +225,27 @@ describe("Graph Functions", () => {
     expect(result.error).toContain("No observations");
   });
 
+  it("graph-extract reports failure when the LLM call fails after heuristics matched", async () => {
+    mockProvider.compress.mockRejectedValueOnce(new Error("LLM timeout"));
+
+    const result = (await sdk.trigger("mem::graph-extract", {
+      observations: [
+        { ...testObs, concepts: ["auth"], files: ["src/auth.ts"] },
+      ],
+    })) as {
+      success: boolean;
+      error?: string;
+      nodesAdded: number;
+      edgesAdded: number;
+    };
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("LLM timeout");
+    expect(result.nodesAdded).toBe(2);
+    expect(result.edgesAdded).toBe(1);
+    expect(await kv.list<GraphNode>("mem:graph:nodes")).toHaveLength(2);
+  });
+
   it("caps an unbounded graph-query body to a default page and reports totals", async () => {
     // Seed a graph with more nodes than the default page size.
     const NODE_COUNT = 1200;
