@@ -16,6 +16,7 @@ import {
   isDropStaleIndexEnabled,
   getVectorBackfillMax,
   getAuditRetentionMonths,
+  getInvocationTimeoutMs,
   getStateBackend,
   isSessionSweepEnabled,
   isGraphCompactOnBootEnabled,
@@ -236,7 +237,7 @@ async function main() {
 
   const sdk = withWriteScrubbing(registerWorker(config.engineUrl, {
     workerName: "agentmemory",
-    invocationTimeoutMs: 180000,
+    invocationTimeoutMs: getInvocationTimeoutMs(),
     otel: {
       serviceName: OTEL_CONFIG.serviceName,
       serviceVersion: OTEL_CONFIG.serviceVersion,
