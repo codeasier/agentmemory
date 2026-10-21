@@ -234,6 +234,7 @@ async function main() {
     `REST API: http://localhost:${config.restPort}/agentmemory/*`,
   );
   bootLog(`Streams: ws://localhost:${config.streamsPort}`);
+  logger.info("Worker invocation timeout", { timeoutMs: getInvocationTimeoutMs() });
 
   const sdk = withWriteScrubbing(registerWorker(config.engineUrl, {
     workerName: "agentmemory",
