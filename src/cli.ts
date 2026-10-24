@@ -95,9 +95,11 @@ const CORE_TOOLS_COUNT = getAllTools().filter((t) => ESSENTIAL_TOOLS.has(t.name)
 import { resolveDataDir } from "./cli-data-dir.js";
 import { runCaptureCommand } from "./cli/capture.js";
 import { bearerHeaders, resolveClientSecret } from "./secret-store.js";
+import { ensureWorkerRuntime } from "./cli/worker-runtime.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
+ensureWorkerRuntime();
 const IS_WINDOWS = platform() === "win32";
 const IS_VERBOSE =
   args.includes("--verbose") ||

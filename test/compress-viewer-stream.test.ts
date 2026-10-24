@@ -4,8 +4,9 @@ vi.mock("../src/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("../src/functions/search.js", () => ({
-  getSearchIndex: () => ({ add: vi.fn() }),
+vi.mock("../src/functions/search.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../src/functions/search.js")>(),
+  getSearchIndex: () => ({ add: vi.fn().mockReturnValue(true) }),
   vectorIndexAddGuarded: vi.fn().mockResolvedValue(false),
   scheduleIndexSave: vi.fn(),
 }));

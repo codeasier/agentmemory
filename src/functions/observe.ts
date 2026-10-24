@@ -14,7 +14,7 @@ import { getEnvVar, isAutoCompressEnabled } from "../config.js";
 import { buildSyntheticCompression } from "./compress-synthetic.js";
 import { isCaptureKey } from "../capture/event-record.js";
 import { claimBackfillPrompt, isBackfillPrompt, recordLivePrompt } from "../capture/prompt-ledger.js";
-import { getSearchIndex, getVectorIndex, scheduleIndexSave, vectorIndexAddGuarded } from "./search.js";
+import { getSearchIndex, getVectorIndex, scheduleIndexSave, vectorIndexAddGuarded, isIndexableObservation } from "./search.js";
 import { getAgentId } from "../config.js";
 import { logger } from "../logger.js";
 import { saveImageToDisk } from "../utils/image-store.js";
@@ -152,10 +152,10 @@ export function extractImage(d: unknown): string | undefined {
 }
 
 export async function restoreIndexEntries(obs: CompressedObservation): Promise<void> {
-  if (typeof obs.title !== "string" || !obs.sessionId) return;
+  if (!isIndexableObservation(obs) || !obs.sessionId) return;
   const search = getSearchIndex();
   if (!search.has(obs.id)) {
-    search.add(obs);
+    if (!search.add(obs)) return;
     scheduleIndexSave();
   }
   const vectors = getVectorIndex();
@@ -519,14 +519,15 @@ export function registerObserveFunction(
             obsId,
             synthetic,
           );
-          getSearchIndex().add(synthetic);
-          scheduleIndexSave();
-          await vectorIndexAddGuarded(
-            synthetic.id,
-            synthetic.sessionId,
-            synthetic.title + " " + (synthetic.narrative || ""),
-            { kind: "synthetic", logId: synthetic.id },
-          );
+          if (isIndexableObservation(synthetic) && getSearchIndex().add(synthetic)) {
+            scheduleIndexSave();
+            await vectorIndexAddGuarded(
+              synthetic.id,
+              synthetic.sessionId,
+              synthetic.title + " " + (synthetic.narrative || ""),
+              { kind: "synthetic", logId: synthetic.id },
+            );
+          }
           await sdk.trigger({
             function_id: "stream::set",
             payload: {

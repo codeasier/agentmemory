@@ -441,6 +441,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
         keywordRebuildRunning,
         pendingVectorBackfill: getPendingVectorBackfillCount(),
         vectorBackfillState: getVectorBackfillState(),
+        observationLimit: Number.isFinite(idx.observationLimit) ? idx.observationLimit : null,
       },
       graph,
       graphCompaction: getGraphCompactBootStatus(),

@@ -70,6 +70,7 @@ export interface StatusInputs {
     keywordRebuildRunning?: boolean;
     pendingVectorBackfill: number;
     vectorBackfillState?: VectorBackfillState;
+    observationLimit?: number | null;
   };
   graph: GraphStatsInput | null;
   graphExtractionEnabled: boolean;
@@ -304,6 +305,13 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
   }
 
   const missingObservations = input.index.missingObservations;
+  if (input.index.observationLimit) {
+    problems.push({
+      level: "info",
+      code: "observation_index_window",
+      message: `Recall indexes only the newest ${input.index.observationLimit} observations; older records remain in storage. Explicit memories are not capped.`,
+    });
+  }
   if (!input.index.keywordRebuildRunning && missingObservations !== null && missingObservations > 0) {
     problems.push({
       level: "warn",

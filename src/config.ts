@@ -573,6 +573,13 @@ export function getStateSaveIntervalMs(): number | undefined {
 
 export const VECTOR_BUCKET_SIZE_DEFAULT = 500;
 
+export function getMaxIndexedObservations(): number {
+  const raw = getEnvVar("AGENTMEMORY_MAX_INDEXED_OBSERVATIONS");
+  if (raw === undefined || !/^\d+$/.test(raw.trim())) return 0;
+  const value = Number(raw.trim());
+  return Number.isSafeInteger(value) ? value : 0;
+}
+
 export function getVectorBucketSize(): number {
   const raw = safeParseInt(getMergedEnv()["AGENTMEMORY_VECTOR_BUCKET_SIZE"], VECTOR_BUCKET_SIZE_DEFAULT);
   return raw > 0 ? raw : VECTOR_BUCKET_SIZE_DEFAULT;

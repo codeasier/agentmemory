@@ -71,7 +71,7 @@
   <picture><source media="(prefers-color-scheme: dark)" srcset="assets/tags/light/stat-tools.svg"><img src="assets/tags/stat-tools.svg" alt="54 MCP tools" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="assets/tags/light/stat-hooks.svg"><img src="assets/tags/stat-hooks.svg" alt="12 auto hooks" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="assets/tags/light/stat-deps.svg"><img src="assets/tags/stat-deps.svg" alt="0 external DBs" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/tags/light/stat-tests.svg"><img src="assets/tags/stat-tests.svg" alt="2,700+ tests passing" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/tags/light/stat-tests.svg"><img src="assets/tags/stat-tests.svg" alt="2,900+ tests passing" height="38" /></picture>
 </p>
 
 <p align="center">
@@ -1371,6 +1371,10 @@ This repo's `docker-compose.yml` does not go through the CLI's config lookup: it
 
 ### Storage backend: file (default) vs redis
 
+Worker search memory is separate from backend storage. See [Worker memory](docs/worker-memory.md)
+for Float16 resident vectors, empty-narrative reconciliation, the opt-in
+`AGENTMEMORY_MAX_INDEXED_OBSERVATIONS` window, and Linux worker allocator settings.
+
 `iii-state` and `iii-stream` default to iii-engine's bundled file-based KV store: one JSON file per scope, held in the engine process's memory and rewritten to disk on a timer. That's the right default for a single-user local install; a shared daemon with several concurrent writers gets real per-key writes from Redis instead, at the cost of a network round trip per operation (every `state::*` call still serializes on one Redis connection, so this trades the file store's lock for a socket, not for parallelism).
 
 Set `AGENTMEMORY_STATE_BACKEND=redis` (plus `AGENTMEMORY_REDIS_URL`) to switch both workers to iii-engine's built-in `redis` adapter, which stores each key as a Redis hash field (`HSET`) instead of rewriting a whole scope on every write:
@@ -1446,7 +1450,7 @@ fi
 | Prometheus / Grafana | iii OTEL + health monitor |
 | Custom plugin systems | `iii worker add <name>` |
 
-**221 source files · ~53,000 LOC · 2,700+ tests · 311 functions · 60 KV scopes**, all on three primitives. No `agentmemory plugin install`. The plugin system is iii itself.
+**222 source files · ~54,000 LOC · 2,900+ tests · 311 functions · 60 KV scopes**, all on three primitives. No `agentmemory plugin install`. The plugin system is iii itself.
 
 ---
 
@@ -1870,7 +1874,7 @@ curl -X POST http://localhost:3111/agentmemory/graph/compact -H "Content-Type: a
 ```bash
 npm run dev               # Hot reload
 npm run build             # Production build
-npm test                  # 2,700+ tests
+npm test                  # 2,900+ tests
 npm run test:integration  # API tests (requires running services)
 ```
 

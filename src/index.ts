@@ -23,6 +23,7 @@ import {
   getSessionSweepStaleHours,
   isEvictionEnabled,
   getEvictionIntervalMs,
+  getMaxIndexedObservations,
 } from "./config.js";
 import {
   createProvider,
@@ -59,6 +60,7 @@ import {
   rebuildKeywordIndex,
   markKeywordRebuildPending,
   getSearchIndex,
+  prepareObservationWindow,
   setVectorIndex,
   setEmbeddingProvider,
   setIndexPersistence,
@@ -462,7 +464,14 @@ async function main() {
         : undefined,
   });
 
-  const indexPersistence = new IndexPersistence(kv, vectorIndex);
+  const observationLimit = getMaxIndexedObservations();
+  if (observationLimit > 0) {
+    await prepareObservationWindow(kv);
+    markKeywordRebuildPending();
+  }
+  const indexPersistence = new IndexPersistence(kv, vectorIndex, {
+    shouldLoadVector: observationLimit > 0 ? (id) => getSearchIndex().has(id) : undefined,
+  });
   setIndexPersistence(indexPersistence);
   let orphanFlushTimer: ReturnType<typeof setTimeout> | null = null;
   let shuttingDown = false;
@@ -541,7 +550,7 @@ async function main() {
   const vectorCountShortfall =
     Boolean(loaded?.vector) &&
     loaded?.expectedCount !== undefined &&
-    loaded.vector!.size < loaded.expectedCount;
+    (loaded.loadedCount ?? loaded.vector!.size) < loaded.expectedCount;
   let vectorBackfillSince =
     !loaded || loaded.state === "unavailable"
       ? undefined

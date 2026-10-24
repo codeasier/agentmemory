@@ -4,6 +4,8 @@ import {
   decodePersistedEmbedding,
   float32ToBase64,
   float32ToFloat16Base64,
+  base64ToFloat16,
+  float16ToBase64,
   type VectorEntry,
 } from "./vector-index.js";
 import type { StateKV } from "./kv.js";
@@ -84,6 +86,7 @@ type IndexPersistenceOptions = {
   saveIntervalMs?: number;
   bucketSize?: number;
   now?: () => number;
+  shouldLoadVector?: (id: string) => boolean;
 };
 
 export interface IndexLegStatus {
@@ -119,6 +122,7 @@ export interface VectorLoadResult {
   state: VectorLoadState;
   savedAt: string | null;
   expectedCount?: number;
+  loadedCount?: number;
 }
 
 export function vectorBucketScope(bucket: number): string {
@@ -227,6 +231,8 @@ export class IndexPersistence {
   private pendingLogUnknown = false;
   private pendingLogError: string | null = null;
   private earlySaveQueued = false;
+  private readonly shouldLoadVector: (id: string) => boolean;
+  private retryLogRows = new Map<string, PendingVectorRow>();
 
   constructor(
     private kv: StateKV,
@@ -235,6 +241,7 @@ export class IndexPersistence {
   ) {
     this.vector?.setChangeListener((id, entry) => this.logChange(id, entry));
     this.now = options.now ?? Date.now;
+    this.shouldLoadVector = options.shouldLoadVector ?? (() => true);
     const interval = options.saveIntervalMs;
     this.saveIntervalMs =
       typeof interval === "number" && Number.isFinite(interval) && interval > 0
@@ -310,12 +317,16 @@ export class IndexPersistence {
         if (row.q > this.seq) this.seq = row.q;
         if (row.c === 1) {
           vector.clear();
+          for (const id of this.bucketOfId.keys()) vector.markRemoved(id);
+          for (const id of this.pendingLog.keys()) {
+            if (id !== PENDING_CLEAR_KEY) vector.markRemoved(id);
+          }
           result.cleared = true;
           continue;
         }
         const id = row.id!;
         if (row.t === 1) {
-          if (vector.has(id)) {
+          if (vector.has(id) || this.bucketOfId.has(id)) {
             vector.remove(id);
             result.removed++;
           }
@@ -333,6 +344,7 @@ export class IndexPersistence {
           continue;
         }
         vector.add(id, typeof row.s === "string" ? row.s : "", embedding);
+        if (!this.shouldLoadVector(id)) vector.evictResident(id);
         result.added++;
       }
     } finally {
@@ -367,6 +379,29 @@ export class IndexPersistence {
 
   async flushPendingLog(): Promise<void> {
     await Promise.all([...this.logChains.values()]);
+    const rows = [...this.retryLogRows];
+    await Promise.all(rows.map(([key, row]) => this.writeLogRow(key, row)));
+    if (this.retryLogRows.size === 0) this.pendingLogError = null;
+  }
+
+  reconcileIndex(keep: (id: string) => boolean): number {
+    const removed = new Set<string>();
+    for (const id of this.bucketOfId.keys()) {
+      if (keep(id)) continue;
+      this.vector?.evictResident(id);
+      this.vector?.markRemoved(id);
+      removed.add(id);
+    }
+    if (this.vector) {
+      for (const id of [...this.vector.keys()]) {
+        if (keep(id)) continue;
+        this.vector.evictResident(id);
+        this.vector.markRemoved(id);
+        removed.add(id);
+      }
+    }
+    if (removed.size > 0) this.scheduleSave();
+    return removed.size;
   }
 
   private nextSeq(): number {
@@ -380,6 +415,10 @@ export class IndexPersistence {
     const q = this.nextSeq();
     let row: PendingVectorRow;
     if (id === null) {
+      for (const storedId of this.bucketOfId.keys()) this.vector?.markRemoved(storedId);
+      for (const pendingId of this.pendingLog.keys()) {
+        if (pendingId !== PENDING_CLEAR_KEY) this.vector?.markRemoved(pendingId);
+      }
       row = { q, c: 1 };
     } else if (entry) {
       row = {
@@ -393,9 +432,8 @@ export class IndexPersistence {
       row = { q, id, t: 1 };
     }
     this.pendingLog.set(key, q);
-    this.enqueueLog(key, async () => {
-      await this.kv.set<PendingVectorRow>(KV.vectorPendingLog, key, row);
-    }).then(
+    this.retryLogRows.set(key, row);
+    this.writeLogRow(key, row).then(
       () => {
         this.pendingLogError = null;
       },
@@ -405,6 +443,14 @@ export class IndexPersistence {
       },
     );
     this.maybeEarlySave();
+  }
+
+  private writeLogRow(key: string, row: PendingVectorRow): Promise<void> {
+    return this.enqueueLog(key, async () => {
+      if (this.retryLogRows.get(key)?.q !== row.q) return;
+      await this.kv.set<PendingVectorRow>(KV.vectorPendingLog, key, row);
+      if (this.retryLogRows.get(key)?.q === row.q) this.retryLogRows.delete(key);
+    });
   }
 
   private enqueueLog(key: string, op: () => Promise<void>): Promise<void> {
@@ -479,15 +525,15 @@ export class IndexPersistence {
       await this.removeLegacyBm25Snapshot();
       const expectedCount = Number.isInteger(meta.count) ? meta.count : undefined;
       this.vectorCountShortfall =
-        expectedCount !== undefined && loaded.size < expectedCount
-          ? { expected: expectedCount, loaded: loaded.size }
+        expectedCount !== undefined && this.bucketOfId.size < expectedCount
+          ? { expected: expectedCount, loaded: this.bucketOfId.size }
           : null;
       if (this.vectorCountShortfall) {
         logger.warn("index persistence: loaded fewer vectors than the last save recorded", {
           ...this.vectorCountShortfall,
         });
       }
-      return { vector: loaded, state: "buckets", savedAt: meta.savedAt ?? null, expectedCount };
+      return { vector: loaded, state: "buckets", savedAt: meta.savedAt ?? null, expectedCount, loadedCount: this.bucketOfId.size };
     }
 
     return this.migrateLegacy();
@@ -555,7 +601,7 @@ export class IndexPersistence {
   private async runSave(): Promise<void> {
     const vector = this.vector;
     if (!vector) return;
-    if (vector.pendingChanges === 0 && this.orphanDeletes.length === 0) return;
+    if (vector.pendingChanges === 0 && this.orphanDeletes.length === 0 && this.pendingLog.size === 0 && this.retryLogRows.size === 0) return;
     const epoch = this.dirtyEpoch;
     this.markedDuringRunAt = null;
     this.lastSaveAt = this.now();
@@ -563,10 +609,12 @@ export class IndexPersistence {
     const coveredSeq = this.seq;
     try {
       await this.writeChanges(vector);
+      await this.flushPendingLog();
       await this.clearCoveredPendingLog(coveredSeq).catch((err) => {
         this.pendingLogError = errorMessage(err);
         this.logFailure(err);
       });
+      if (this.pendingLog.size === 0 && this.retryLogRows.size === 0) this.pendingLogError = null;
       this.leg.lastSavedAt = new Date(this.now()).toISOString();
       this.leg.lastError = null;
       this.leg.lastErrorAt = null;
@@ -607,13 +655,27 @@ export class IndexPersistence {
     }
     const failures = await inBatches([...changes], WRITE_CONCURRENCY, async ([id, present]) => {
       const entry = present ? vector.get(id) : undefined;
+      const half = entry ? vector.getFloat16(id) : undefined;
       try {
-        if (entry) {
+        if (present) {
+          let sessionId = entry?.sessionId;
+          let encoded: string;
+          if (entry) {
+            encoded = float16ToBase64(half!);
+          } else {
+            await this.flushPendingLog();
+            const row = await this.kv.get<PendingVectorRow>(KV.vectorPendingLog, id);
+            if (!row?.e || row.t === 1 || row.c === 1) {
+              throw new Error(`Cannot checkpoint nonresident vector ${id}: pending embedding unavailable`);
+            }
+            sessionId = row.s ?? "";
+            encoded = float32ToFloat16Base64(base64ToFloat32(row.e));
+          }
           const bucket = this.assignBucket(id);
           await this.kv.set<PersistedVector>(vectorBucketScope(bucket), id, {
             id,
-            s: entry.sessionId,
-            e: float32ToFloat16Base64(entry.embedding),
+            s: sessionId!,
+            e: encoded,
             c: "f16",
           });
         } else {
@@ -639,7 +701,7 @@ export class IndexPersistence {
         v: 4,
         bucketCount: this.bucketCountInUse(),
         savedAt: new Date(this.now()).toISOString(),
-        count: vector.size,
+        count: this.bucketOfId.size,
       });
     } catch (err) {
       vector.returnChanges(changes);
@@ -669,7 +731,13 @@ export class IndexPersistence {
           }
         }
         try {
-          loaded.loadPersisted(raw.id, raw.s, decodePersistedEmbedding(raw.e, codec));
+          if (codec === "f16") {
+            const embedding = base64ToFloat16(raw.e);
+            if (this.shouldLoadVector(raw.id)) loaded.loadPersistedFloat16(raw.id, raw.s, embedding);
+          } else {
+            const embedding = decodePersistedEmbedding(raw.e, codec);
+            if (this.shouldLoadVector(raw.id)) loaded.loadPersisted(raw.id, raw.s, embedding);
+          }
         } catch {
           continue;
         }
@@ -760,8 +828,10 @@ export class IndexPersistence {
       buckets: this.bucketCountInUse(),
     });
     const migrated = new VectorIndex();
-    for (const [id, entry] of legacy.entries()) migrated.loadPersisted(id, entry.sessionId, entry.embedding);
-    return { vector: migrated, state: "migrated", savedAt };
+    for (const [id, entry] of legacy.entries()) {
+      if (this.shouldLoadVector(id)) migrated.loadPersisted(id, entry.sessionId, entry.embedding);
+    }
+    return { vector: migrated, state: "migrated", savedAt, loadedCount: legacy.size };
   }
 
   private async removeLegacyVectorSnapshot(manifest: IndexShardManifest | null): Promise<void> {
