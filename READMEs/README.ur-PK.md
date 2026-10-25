@@ -1432,7 +1432,7 @@ fi
 | Prometheus / Grafana | iii OTEL + health monitor |
 | کسٹم plugin سسٹمز | `iii worker add <name>` |
 
-**222 سورس فائلز · ~54,000 لائنز کوڈ · 2,900+ ٹیسٹس · 311 فنکشنز · 60 KV اسکوپس**، سب تین primitives پر۔ کوئی `agentmemory plugin install` نہیں۔ plugin سسٹم خود iii ہی ہے۔
+**223 سورس فائلز · ~54,000 لائنز کوڈ · 2,900+ ٹیسٹس · 311 فنکشنز · 60 KV اسکوپس**، سب تین primitives پر۔ کوئی `agentmemory plugin install` نہیں۔ plugin سسٹم خود iii ہی ہے۔
 
 ---
 

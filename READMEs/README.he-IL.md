@@ -1439,7 +1439,7 @@ fi
 | Prometheus / Grafana | iii OTEL + מוניטור health |
 | מערכות plugin מותאמות אישית | `iii worker add <name>` |
 
-**222 קבצי מקור · ~54,000 LOC · 2,900+ בדיקות · 311 פונקציות · 60 תחומי KV**, הכול על שלושה primitives. אין `agentmemory plugin install`. מערכת ה-plugin היא iii עצמו.
+**223 קבצי מקור · ~54,000 LOC · 2,900+ בדיקות · 311 פונקציות · 60 תחומי KV**, הכול על שלושה primitives. אין `agentmemory plugin install`. מערכת ה-plugin היא iii עצמו.
 
 ---
 

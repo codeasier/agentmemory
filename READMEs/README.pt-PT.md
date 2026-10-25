@@ -1446,7 +1446,7 @@ O `/agentmemory/export` também aceita `?maxSessions=` e `?offset=` para dividir
 | Prometheus / Grafana | iii OTEL + monitor de saúde |
 | Sistemas de plugins personalizados | `iii worker add <name>` |
 
-**222 ficheiros de código-fonte · ~54,000 LOC · 2,900+ testes · 311 funções · 60 âmbitos de KV**, tudo sobre três primitivos. Sem `agentmemory plugin install`. O sistema de plugins é o próprio iii.
+**223 ficheiros de código-fonte · ~54,000 LOC · 2,900+ testes · 311 funções · 60 âmbitos de KV**, tudo sobre três primitivos. Sem `agentmemory plugin install`. O sistema de plugins é o próprio iii.
 
 ---
 

@@ -10,6 +10,7 @@ import type {
   GraphEdge,
 } from "../types.js";
 import { getVisibleTools } from "./tools-registry.js";
+import { validateSmartSearchInput } from "./smart-search-input.js";
 import { checkAuth } from "../triggers/api.js";
 import { getAgentId, isAgentScopeIsolated } from "../config.js";
 
@@ -255,19 +256,19 @@ export function registerMcpEndpoints(
           }
 
           case "memory_smart_search": {
-            if (typeof args.query !== "string" || !args.query.trim()) {
+            const input = validateSmartSearchInput(args);
+            if ("error" in input) {
               return {
                 status_code: 400,
-                body: { error: "query is required for memory_smart_search" },
+                body: { error: input.error },
               };
             }
-            const expandIds = parseCsvList(args.expandIds).slice(0, 20);
             const limit = Math.max(1, Math.min(100, asNumber(args.limit, 10) ?? 10));
             const result = await sdk.trigger({
               function_id: "mem::smart-search",
               payload: {
-                query: args.query,
-                expandIds,
+                query: input.query,
+                expandIds: input.expandIds,
                 limit,
               },
             });

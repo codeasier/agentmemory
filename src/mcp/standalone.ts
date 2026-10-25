@@ -3,6 +3,7 @@
 import { InMemoryKV } from "./in-memory-kv.js";
 import { createStdioTransport } from "./transport.js";
 import { getAllTools } from "./tools-registry.js";
+import { validateSmartSearchInput } from "./smart-search-input.js";
 import { getStandalonePersistPath } from "../config.js";
 import { VERSION } from "../version.js";
 import { generateId } from "../state/schema.js";
@@ -119,6 +120,7 @@ interface Validated {
   project?: string;
   agentId?: string;
   query?: string;
+  expandIds?: string[];
   limit?: number;
   format?: string;
   tokenBudget?: number;
@@ -154,11 +156,18 @@ function validate(toolName: string, args: Record<string, unknown>): Validated {
     }
     case "memory_recall":
     case "memory_smart_search": {
-      const query = args["query"];
-      if (typeof query !== "string" || !query.trim()) {
-        throw new Error("query is required");
+      if (toolName === "memory_smart_search") {
+        const input = validateSmartSearchInput(args);
+        if ("error" in input) throw new Error(input.error);
+        v.query = input.query;
+        v.expandIds = input.expandIds;
+      } else {
+        const query = args["query"];
+        if (typeof query !== "string" || !query.trim()) {
+          throw new Error("query is required");
+        }
+        v.query = query.trim();
       }
-      v.query = query.trim();
       v.limit = parseLimit(args["limit"]);
       const fmt = args["format"];
       if (typeof fmt === "string" && fmt.trim()) {
@@ -229,6 +238,7 @@ async function handleProxy(
     }
     case "memory_smart_search": {
       const body: Record<string, unknown> = { query: v.query, limit: v.limit };
+      if (v.expandIds) body["expandIds"] = v.expandIds;
       if (v.format != null) body["format"] = v.format;
       if (v.tokenBudget != null) body["token_budget"] = v.tokenBudget;
       const result = await handle.call("/agentmemory/smart-search", {
@@ -307,6 +317,11 @@ async function handleLocal(
 
     case "memory_recall":
     case "memory_smart_search": {
+      if (v.expandIds?.length) {
+        throw new Error(
+          "expandIds expansion requires a reachable agentmemory server; local fallback cannot fetch daemon observations. Start the server and set AGENTMEMORY_URL.",
+        );
+      }
       const query = (v.query || "").toLowerCase();
       const limit = v.limit ?? DEFAULT_LIMIT;
       const all =
