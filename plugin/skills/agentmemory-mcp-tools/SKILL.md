@@ -12,6 +12,7 @@ Save then recall:
 
 1. `memory_save` with `content` (the insight), `concepts` (comma-separated keywords), `files` (comma-separated paths).
 2. `memory_smart_search` with `query` and `limit` to retrieve it later. This runs hybrid BM25 plus vector plus graph-expanded search.
+3. Expand selected observation hits with `memory_smart_search({ expandIds: "obs_1,obs_2" })`, using the returned `obsId` values. A query is optional for expansion; IDs take precedence if both are supplied. The server expands at most 20 IDs per call and reports `truncated: true` for longer lists. Local fallback supports query searches only and returns an explicit error for expansion.
 
 ## Tool families
 

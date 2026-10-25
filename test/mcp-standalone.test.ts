@@ -310,13 +310,27 @@ describe("handleToolCall", () => {
     await handleToolCall("memory_save", { content: "anything" }, kv);
     await expect(
       handleToolCall("memory_smart_search", {}, kv),
-    ).rejects.toThrow("query is required");
+    ).rejects.toThrow("query or expandIds is required");
     await expect(
       handleToolCall("memory_smart_search", { query: "" }, kv),
-    ).rejects.toThrow("query is required");
+    ).rejects.toThrow("query or expandIds is required");
     await expect(
       handleToolCall("memory_smart_search", { query: "   " }, kv),
-    ).rejects.toThrow("query is required");
+    ).rejects.toThrow("query or expandIds is required");
+  });
+
+  it.each([undefined, "", "   ", 42, null])("memory_recall still requires a nonblank query: %j", async (query) => {
+    await expect(handleToolCall("memory_recall", { query, expandIds: "obs_1" }, new InMemoryKV()))
+      .rejects.toThrow("query is required");
+  });
+
+  it.each([undefined, "bcrypt"])("local fallback explicitly rejects expansion with query %j", async (query) => {
+    const kv = new InMemoryKV();
+    await handleToolCall("memory_save", { content: "Use bcrypt" }, kv);
+    const list = vi.spyOn(kv, "list");
+    await expect(handleToolCall("memory_smart_search", { query, expandIds: "obs_1" }, kv))
+      .rejects.toThrow(/expandIds.*requires.*server/i);
+    expect(list).not.toHaveBeenCalled();
   });
 
   it("memory_smart_search searches files and concepts, not just title/content", async () => {

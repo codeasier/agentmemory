@@ -71,8 +71,88 @@ describe("@agentmemory/mcp standalone — server proxy", () => {
     });
     const res = await handleToolCall("memory_smart_search", { query: "auth bug", limit: 5 });
     const body = JSON.parse(res.content[0].text);
+    expect(body.mode).toBe("compact");
     expect(body.query).toBe("auth bug");
     expect(body.results[0].id).toBe("m1");
+  });
+
+  it.each([undefined, "auth bug", "   "])(
+    "proxies CSV expansion IDs with query %j instead of compact searching",
+    async (query) => {
+      let forwarded: Record<string, unknown> | undefined;
+      installFetch((url, init) => {
+        if (url.endsWith("/agentmemory/livez")) return new Response("ok", { status: 200 });
+        if (url.endsWith("/agentmemory/smart-search")) {
+          forwarded = JSON.parse(init?.body as string);
+          return new Response(JSON.stringify({
+            mode: forwarded?.expandIds ? "expanded" : "compact",
+            results: [{ obsId: "obs_1", observation: { narrative: "Full details" } }],
+          }), { status: 200 });
+        }
+        return new Response("not found", { status: 404 });
+      });
+
+      const res = await handleToolCall("memory_smart_search", {
+        ...(query !== undefined && { query }),
+        expandIds: " obs_1, , obs_2, ",
+        limit: 5,
+      });
+
+      expect(forwarded).toEqual({
+        ...(query?.trim() && { query: query.trim() }),
+        expandIds: ["obs_1", "obs_2"],
+        limit: 5,
+      });
+      expect(JSON.parse(res.content[0].text)).toMatchObject({
+        mode: "expanded",
+        results: [{ observation: { narrative: "Full details" } }],
+      });
+    },
+  );
+
+  it("lets the daemon bound expansion and report truncation without losing IDs in transit", async () => {
+    const ids = Array.from({ length: 25 }, (_, i) => `obs_${i}`);
+    let forwarded: Record<string, unknown> | undefined;
+    installFetch((url, init) => {
+      if (url.endsWith("/agentmemory/livez")) return new Response("ok", { status: 200 });
+      forwarded = JSON.parse(init?.body as string);
+      return new Response(JSON.stringify({ mode: "expanded", results: [], truncated: true }), { status: 200 });
+    });
+
+    const res = await handleToolCall("memory_smart_search", { expandIds: ids.join(",") });
+    expect(forwarded?.expandIds).toEqual(ids);
+    expect(JSON.parse(res.content[0].text)).toMatchObject({ mode: "expanded", truncated: true });
+  });
+
+  it.each([
+    {},
+    { query: " \t " },
+    { expandIds: " , , " },
+    { expandIds: "" },
+    { query: "auth", expandIds: " , " },
+    { query: "auth", expandIds: ["obs_1"] },
+    { query: "auth", expandIds: { obsId: "obs_1" } },
+    { query: "auth", expandIds: 42 },
+    { query: "auth", expandIds: null },
+    { query: 42, expandIds: "obs_1" },
+    { query: null, expandIds: "obs_1" },
+  ])("rejects malformed smart-search input before proxying: %j", async (args) => {
+    const fetchFn = installFetch(() => new Response("ok", { status: 200 }));
+    await expect(handleToolCall("memory_smart_search", args)).rejects.toThrow(/query|expandIds/);
+    expect(fetchFn.mock.calls.some(([url]) => String(url).endsWith("/agentmemory/smart-search"))).toBe(false);
+  });
+
+  it("does not compact-search local memories when an expansion proxy fails", async () => {
+    installFetch((url) => url.endsWith("/agentmemory/livez")
+      ? new Response("ok", { status: 200 })
+      : new Response("unavailable", { status: 503 }));
+    const localKv = new InMemoryKV(undefined);
+    const list = vi.spyOn(localKv, "list");
+
+    await expect(handleToolCall("memory_smart_search", {
+      query: "auth", expandIds: "obs_1",
+    }, localKv)).rejects.toThrow(/expandIds.*requires.*server/i);
+    expect(list).not.toHaveBeenCalled();
   });
 
   it("proxies memory_recall to POST /agentmemory/search and forwards format/token_budget", async () => {

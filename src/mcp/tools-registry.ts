@@ -10,9 +10,14 @@ export type McpToolDef = {
         description: string;
         minimum?: number;
         maximum?: number;
+        pattern?: string;
       }
     >;
     required?: string[];
+    anyOf?: Array<{
+      required: string[];
+      properties?: Record<string, { pattern: string }>;
+    }>;
   };
 };
 
@@ -139,18 +144,22 @@ export const CORE_TOOLS: McpToolDef[] = [
   },
   {
     name: "memory_smart_search",
-    description: "Hybrid semantic+keyword search with progressive disclosure.",
+    description: "Hybrid semantic+keyword search with progressive disclosure. Provide a nonblank query or CSV expandIds; expansion takes precedence when both are supplied and requires a reachable server.",
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Search query" },
+        query: { type: "string", description: "Search query (optional when expandIds is provided)" },
         expandIds: {
           type: "string",
-          description: "Comma-separated observation IDs to expand",
+          description: "Comma-separated observation IDs to expand (up to 20 per call; takes precedence over query)",
+          pattern: "[^,\\s]",
         },
         limit: { type: "number", description: "Max results (default 10)" },
       },
-      required: ["query"],
+      anyOf: [
+        { required: ["query"], properties: { query: { pattern: "\\S" } } },
+        { required: ["expandIds"] },
+      ],
     },
   },
   {
