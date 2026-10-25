@@ -288,6 +288,10 @@ export function getAuditMigrateMaxBytes(): number {
   );
 }
 
+export function getInvocationTimeoutMs(): number {
+  return safeParseInt(getMergedEnv()["AGENTMEMORY_INVOCATION_TIMEOUT_MS"], 180000);
+}
+
 export function detectLlmProviderKind(
   env: Record<string, string | undefined> = getMergedEnv(),
 ): "llm" | "noop" {
@@ -568,6 +572,13 @@ export function getStateSaveIntervalMs(): number | undefined {
 }
 
 export const VECTOR_BUCKET_SIZE_DEFAULT = 500;
+
+export function getMaxIndexedObservations(): number {
+  const raw = getEnvVar("AGENTMEMORY_MAX_INDEXED_OBSERVATIONS");
+  if (raw === undefined || !/^\d+$/.test(raw.trim())) return 0;
+  const value = Number(raw.trim());
+  return Number.isSafeInteger(value) ? value : 0;
+}
 
 export function getVectorBucketSize(): number {
   const raw = safeParseInt(getMergedEnv()["AGENTMEMORY_VECTOR_BUCKET_SIZE"], VECTOR_BUCKET_SIZE_DEFAULT);

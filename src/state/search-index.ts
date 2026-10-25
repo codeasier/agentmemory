@@ -7,45 +7,116 @@ interface IndexEntry {
   obsId: string;
   sessionId: string;
   termCount: number;
+  terms: string[];
+  timestamp: number;
+  heapIndex?: number;
+}
+
+interface SearchIndexOptions {
+  maxObservations?: number;
+  onEvict?: (id: string) => void;
+}
+
+class TermPostings extends Map<string, number> {
+  constructor(readonly term: string) {
+    super();
+  }
 }
 
 export class SearchIndex {
   private entries: Map<string, IndexEntry> = new Map();
-  private invertedIndex: Map<string, Set<string>> = new Map();
-  private docTermCounts: Map<string, Map<string, number>> = new Map();
+  private invertedIndex: Map<string, TermPostings> = new Map();
   private totalDocLength = 0;
   private sortedTerms: string[] | null = null;
+  private observationHeap: IndexEntry[] = [];
+  private indexedObservations = 0;
+  private readonly onEvict?: (id: string) => void;
+  readonly observationLimit: number;
 
   private readonly k1 = 1.2;
   private readonly b = 0.75;
 
-  add(obs: CompressedObservation): void {
-    if (this.entries.has(obs.id)) this.remove(obs.id);
+  constructor(options: SearchIndexOptions = {}) {
+    const limit = options.maxObservations ?? Infinity;
+    if (limit !== Infinity && (!Number.isSafeInteger(limit) || limit < 0)) {
+      throw new RangeError(
+        "maxObservations must be a non-negative safe integer or Infinity",
+      );
+    }
+    this.observationLimit = limit;
+    this.onEvict = options.onEvict;
+  }
+
+  add(obs: CompressedObservation): boolean {
     const terms = this.extractTerms(obs);
     const termFreq = new Map<string, number>();
-    let termCount = 0;
 
     for (const term of terms) {
       termFreq.set(term, (termFreq.get(term) || 0) + 1);
-      termCount++;
     }
 
-    this.entries.set(obs.id, {
-      obsId: obs.id,
-      sessionId: obs.sessionId,
-      termCount,
-    });
-    this.docTermCounts.set(obs.id, termFreq);
-    this.totalDocLength += termCount;
+    return this.insertEntry(
+      {
+        obsId: obs.id,
+        sessionId: obs.sessionId,
+        termCount: terms.length,
+        terms: [],
+        timestamp: SearchIndex.timestampOf(obs.timestamp),
+      },
+      termFreq,
+    );
+  }
 
-    for (const term of termFreq.keys()) {
-      if (!this.invertedIndex.has(term)) {
-        this.invertedIndex.set(term, new Set());
+  acceptsObservation(obs: Pick<CompressedObservation, "id" | "timestamp" | "sessionId">): boolean {
+    if (this.entries.has(obs.id)) return true;
+    if (!obs.id.startsWith("obs_") || obs.sessionId === "lesson") return true;
+    if (this.indexedObservations < this.observationLimit) return true;
+    const oldest = this.observationHeap[0];
+    if (!oldest) return false;
+    const timestamp = SearchIndex.timestampOf(obs.timestamp);
+    return timestamp > oldest.timestamp || (timestamp === oldest.timestamp && obs.id > oldest.obsId);
+  }
+
+  private insertEntry(
+    entry: IndexEntry,
+    frequencies: Iterable<[string, number]>,
+  ): boolean {
+    this.remove(entry.obsId);
+    const observation = this.isObservation(entry);
+    let evictedId: string | undefined;
+    if (observation && this.indexedObservations >= this.observationLimit) {
+      const oldest = this.observationHeap[0];
+      if (!oldest || this.compareObservations(entry, oldest) <= 0) {
+        this.onEvict?.(entry.obsId);
+        return false;
       }
-      this.invertedIndex.get(term)!.add(obs.id);
+      evictedId = oldest.obsId;
+      this.remove(evictedId);
     }
 
+    for (const [term, frequency] of frequencies) {
+      this.addPosting(entry, term, frequency);
+    }
+    this.entries.set(entry.obsId, entry);
+    this.totalDocLength += entry.termCount;
+    if (observation) this.trackObservation(entry);
     this.sortedTerms = null;
+    if (evictedId !== undefined) this.onEvict?.(evictedId);
+    return true;
+  }
+
+  private addPosting(entry: IndexEntry, term: string, frequency: number): void {
+    let postings = this.invertedIndex.get(term);
+    if (!postings) {
+      postings = new TermPostings(term);
+      this.invertedIndex.set(term, postings);
+    }
+    if (!postings.has(entry.obsId)) entry.terms.push(postings.term);
+    postings.set(entry.obsId, frequency);
+  }
+
+  keys(): IterableIterator<string> {
+    return this.entries.keys();
   }
 
   has(id: string): boolean {
@@ -79,20 +150,17 @@ export class SearchIndex {
     const entry = this.entries.get(id);
     if (!entry) return;
 
-    const termFreq = this.docTermCounts.get(id);
-    if (termFreq) {
-      for (const term of termFreq.keys()) {
-        const postingList = this.invertedIndex.get(term);
-        if (postingList) {
-          postingList.delete(id);
-          if (postingList.size === 0) {
-            this.invertedIndex.delete(term);
-          }
+    for (const term of entry.terms) {
+      const postingList = this.invertedIndex.get(term);
+      if (postingList) {
+        postingList.delete(id);
+        if (postingList.size === 0) {
+          this.invertedIndex.delete(term);
         }
       }
-      this.docTermCounts.delete(id);
     }
 
+    if (this.isObservation(entry)) this.untrackObservation(entry);
     this.totalDocLength = Math.max(0, this.totalDocLength - entry.termCount);
     this.entries.delete(id);
     this.sortedTerms = null;
@@ -133,10 +201,8 @@ export class SearchIndex {
         const df = matchingDocs.size;
         const idf = Math.log((N - df + 0.5) / (df + 0.5) + 1);
 
-        for (const obsId of matchingDocs) {
+        for (const [obsId, tf] of matchingDocs) {
           const entry = this.entries.get(obsId)!;
-          const docTerms = this.docTermCounts.get(obsId);
-          const tf = docTerms?.get(term) || 0;
           const docLen = entry.termCount;
 
           const numerator = tf * (this.k1 + 1);
@@ -158,10 +224,8 @@ export class SearchIndex {
         const prefixDf = obsIds.size;
         const prefixIdf =
           Math.log((N - prefixDf + 0.5) / (prefixDf + 0.5) + 1) * 0.5;
-        for (const obsId of obsIds) {
+        for (const [obsId, tf] of obsIds) {
           const entry = this.entries.get(obsId)!;
-          const docTerms = this.docTermCounts.get(obsId);
-          const tf = docTerms?.get(indexTerm) || 0;
           const docLen = entry.termCount;
           const numerator = tf * (this.k1 + 1);
           const denominator =
@@ -187,48 +251,60 @@ export class SearchIndex {
     return this.entries.size;
   }
 
+  get observationCount(): number {
+    return this.indexedObservations;
+  }
+
   clear(): void {
     this.entries.clear();
     this.invertedIndex.clear();
-    this.docTermCounts.clear();
     this.totalDocLength = 0;
     this.sortedTerms = null;
+    this.observationHeap.length = 0;
+    this.indexedObservations = 0;
   }
 
   restoreFrom(other: SearchIndex): void {
-    this.entries = new Map(
-      Array.from(other.entries.entries()).map(([k, v]) => [k, { ...v }]),
-    );
-    this.invertedIndex = new Map(
-      Array.from(other.invertedIndex.entries()).map(([k, v]) => [
-        k,
-        new Set(v),
-      ]),
-    );
-    this.docTermCounts = new Map(
-      Array.from(other.docTermCounts.entries()).map(([k, v]) => [
-        k,
-        new Map(v),
-      ]),
-    );
-    this.totalDocLength = other.totalDocLength;
-    this.sortedTerms = null;
+    if (other === this) return;
+    this.clear();
+    for (const entry of other.entries.values()) {
+      this.insertEntry(
+        {
+          obsId: entry.obsId,
+          sessionId: entry.sessionId,
+          termCount: entry.termCount,
+          terms: [],
+          timestamp: entry.timestamp,
+        },
+        other.entryFrequencies(entry),
+      );
+    }
+  }
+
+  private *entryFrequencies(entry: IndexEntry): IterableIterator<[string, number]> {
+    for (const term of entry.terms) {
+      yield [term, this.invertedIndex.get(term)!.get(entry.obsId)!];
+    }
   }
 
   serialize(): string {
-    const entries = Array.from(this.entries.entries());
+    const entries = Array.from(this.entries, ([id, entry]) => [
+      id,
+      {
+        obsId: entry.obsId,
+        sessionId: entry.sessionId,
+        termCount: entry.termCount,
+        terms: entry.terms,
+        timestamp: entry.timestamp,
+      },
+    ]);
     const inverted = Array.from(this.invertedIndex.entries()).map(
-      ([term, ids]) => [term, Array.from(ids)] as [string, string[]],
-    );
-    const docTerms = Array.from(this.docTermCounts.entries()).map(
-      ([id, counts]) =>
-        [id, Array.from(counts.entries())] as [string, [string, number][]],
+      ([term, postings]) => [term, Array.from(postings)],
     );
     return JSON.stringify({
-      v: 2,
+      v: 3,
       entries,
       inverted,
-      docTerms,
       totalDocLength: this.totalDocLength,
     });
   }
@@ -237,15 +313,41 @@ export class SearchIndex {
     try {
       const idx = new SearchIndex();
       const data = JSON.parse(json);
-      if (!data?.entries || !data?.inverted || !data?.docTerms) return idx;
+      const legacy = data?.v === 2 || data?.v === undefined;
+      if (
+        (!legacy && data?.v !== 3) ||
+        !Array.isArray(data?.entries) ||
+        !Array.isArray(data?.inverted) ||
+        (legacy && !Array.isArray(data?.docTerms))
+      ) {
+        return idx;
+      }
       for (const [key, val] of data.entries) {
-        idx.entries.set(key, val);
+        const entry: IndexEntry = {
+          obsId: key,
+          sessionId: val.sessionId,
+          termCount: val.termCount,
+          terms: [],
+          timestamp: SearchIndex.timestampOf(val.timestamp),
+        };
+        idx.entries.set(key, entry);
+        if (idx.isObservation(entry)) idx.trackObservation(entry);
       }
-      for (const [term, ids] of data.inverted) {
-        idx.invertedIndex.set(term, new Set(ids));
-      }
-      for (const [id, counts] of data.docTerms) {
-        idx.docTermCounts.set(id, new Map(counts));
+      if (legacy) {
+        for (const [id, counts] of data.docTerms) {
+          const entry = idx.entries.get(id);
+          if (!entry) continue;
+          for (const [term, frequency] of counts) {
+            idx.addPosting(entry, term, frequency);
+          }
+        }
+      } else {
+        for (const [term, postings] of data.inverted) {
+          for (const [id, frequency] of postings) {
+            const entry = idx.entries.get(id);
+            if (entry) idx.addPosting(entry, term, frequency);
+          }
+        }
       }
       const rawLen = Number(data.totalDocLength);
       idx.totalDocLength =
@@ -253,6 +355,77 @@ export class SearchIndex {
       return idx;
     } catch {
       return new SearchIndex();
+    }
+  }
+
+  private static timestampOf(value: unknown): number {
+    const timestamp =
+      typeof value === "number"
+        ? value
+        : typeof value === "string" ? Date.parse(value) : NaN;
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+
+  private isObservation(entry: IndexEntry): boolean {
+    return entry.obsId.startsWith("obs_") && entry.sessionId !== "lesson";
+  }
+
+  private compareObservations(a: IndexEntry, b: IndexEntry): number {
+    return (
+      a.timestamp - b.timestamp ||
+      (a.obsId < b.obsId ? -1 : a.obsId > b.obsId ? 1 : 0)
+    );
+  }
+
+  private trackObservation(entry: IndexEntry): void {
+    this.indexedObservations++;
+    if (this.observationLimit === Infinity) return;
+    entry.heapIndex = this.observationHeap.length;
+    this.observationHeap.push(entry);
+    this.siftUp(entry.heapIndex);
+  }
+
+  private untrackObservation(entry: IndexEntry): void {
+    this.indexedObservations--;
+    const position = entry.heapIndex;
+    if (position === undefined) return;
+    const last = this.observationHeap.pop()!;
+    delete entry.heapIndex;
+    if (position === this.observationHeap.length) return;
+    this.observationHeap[position] = last;
+    last.heapIndex = position;
+    this.siftDown(this.siftUp(position));
+  }
+
+  private swapObservations(a: number, b: number): void {
+    const heap = this.observationHeap;
+    [heap[a], heap[b]] = [heap[b], heap[a]];
+    heap[a].heapIndex = a;
+    heap[b].heapIndex = b;
+  }
+
+  private siftUp(position: number): number {
+    const heap = this.observationHeap;
+    while (position > 0) {
+      const parent = (position - 1) >>> 1;
+      if (this.compareObservations(heap[parent], heap[position]) <= 0) break;
+      this.swapObservations(parent, position);
+      position = parent;
+    }
+    return position;
+  }
+
+  private siftDown(position: number): void {
+    const heap = this.observationHeap;
+    while (position * 2 + 1 < heap.length) {
+      let child = position * 2 + 1;
+      if (
+        child + 1 < heap.length &&
+        this.compareObservations(heap[child + 1], heap[child]) < 0
+      ) child++;
+      if (this.compareObservations(heap[position], heap[child]) <= 0) break;
+      this.swapObservations(position, child);
+      position = child;
     }
   }
 

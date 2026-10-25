@@ -13,78 +13,72 @@ export function base64ToFloat32(b64: string): Float32Array {
   );
 }
 
-// Node 22 has no DataView.setFloat16. IEEE-754 binary16, little-endian,
-// matching the evidence script (numpy float16) well enough that a 1024-d
-// cosine round-trip stays at 1.0 on real embeddings.
-function float32ToFloat16Bits(value: number): number {
-  const f32 = new Float32Array(1);
-  const u32 = new Uint32Array(f32.buffer);
-  f32[0] = value;
-  const x = u32[0];
+function float32BitsToFloat16Bits(x: number): number {
   const sign = (x >>> 16) & 0x8000;
   const exp = (x >>> 23) & 0xff;
   const frac = x & 0x7fffff;
   if (exp === 0xff) {
     return sign | 0x7c00 | (frac ? 0x200 : 0);
   }
-  if (exp === 0) {
-    if (frac === 0) return sign;
-    let m = frac;
-    let e = -14;
-    while ((m & 0x800000) === 0) {
-      m <<= 1;
-      e -= 1;
-    }
-    m &= 0x7fffff;
-    if (e < -24) return sign;
-    if (e < -14) {
-      const shift = -14 - e;
-      return sign | (m >> (13 + shift));
-    }
-    return sign | (((e + 15) << 10) + (m >> 13));
-  }
-  const unb = exp - 127;
-  if (unb > 15) return sign | 0x7c00;
-  if (unb < -14) {
-    if (unb < -24) return sign;
-    const shift = -14 - unb;
-    return sign | (((frac | 0x800000) >> (13 + shift)) & 0x3ff);
-  }
-  return sign | (((unb + 15) << 10) + (frac >> 13) + ((frac >> 12) & 1));
+
+  const halfExp = exp - 112;
+  if (halfExp >= 31) return sign | 0x7c00;
+
+  const shift = halfExp <= 0 ? 14 - halfExp : 13;
+  if (shift > 24) return sign;
+  const significand = halfExp <= 0 ? frac | 0x800000 : frac;
+  const truncated = significand >>> shift;
+  const remainder = significand & ((1 << shift) - 1);
+  const halfway = 1 << (shift - 1);
+  const roundUp = remainder > halfway || (remainder === halfway && (truncated & 1) !== 0);
+  const rounded = truncated + Number(roundUp);
+  return sign | ((halfExp > 0 ? halfExp << 10 : 0) + rounded);
 }
 
-function float16BitsToFloat32(h: number): number {
-  const sign = (h & 0x8000) << 16;
-  const exp = (h >> 10) & 0x1f;
-  const frac = h & 0x3ff;
-  let bits: number;
-  if (exp === 0) {
-    if (frac === 0) {
-      bits = sign;
-    } else {
-      let m = frac;
-      let e = -14;
-      while ((m & 0x400) === 0) {
-        m <<= 1;
-        e -= 1;
-      }
-      m &= 0x3ff;
-      bits = sign | ((e + 127) << 23) | (m << 13);
-    }
-  } else if (exp === 0x1f) {
-    bits = sign | 0x7f800000 | (frac << 13);
-  } else {
-    bits = sign | ((exp - 15 + 127) << 23) | (frac << 13);
-  }
-  const u32 = new Uint32Array(1);
-  u32[0] = bits;
-  return new Float32Array(u32.buffer)[0];
+const float16Values = new Float32Array(0x10000);
+for (let bits = 0; bits < float16Values.length; bits++) {
+  const sign = (bits & 0x8000) === 0 ? 1 : -1;
+  const exp = (bits >>> 10) & 0x1f;
+  const frac = bits & 0x3ff;
+  const value = exp === 0
+    ? frac * 2 ** -24
+    : exp === 31
+      ? frac === 0 ? Infinity : NaN
+      : (1024 + frac) * 2 ** (exp - 25);
+  float16Values[bits] = sign * value;
+}
+
+function toFloat16(arr: Float32Array): Uint16Array {
+  const bits = new Uint32Array(arr.buffer, arr.byteOffset, arr.length);
+  const out = new Uint16Array(arr.length);
+  for (let i = 0; i < out.length; i++) out[i] = float32BitsToFloat16Bits(bits[i]);
+  return out;
+}
+
+function toFloat32(arr: Uint16Array): Float32Array {
+  const out = new Float32Array(arr.length);
+  for (let i = 0; i < out.length; i++) out[i] = float16Values[arr[i]];
+  return out;
+}
+
+export function float16ToBase64(arr: Uint16Array): string {
+  const out = Buffer.allocUnsafe(arr.byteLength);
+  for (let i = 0; i < arr.length; i++) out.writeUInt16LE(arr[i], i * 2);
+  return out.toString("base64");
+}
+
+export function base64ToFloat16(b64: string): Uint16Array {
+  const buf = Buffer.from(b64, "base64");
+  const out = new Uint16Array(buf.byteLength >> 1);
+  for (let i = 0; i < out.length; i++) out[i] = buf.readUInt16LE(i * 2);
+  return out;
 }
 
 export function float32ToFloat16Base64(arr: Float32Array): string {
+  const bits = new Uint32Array(arr.buffer, arr.byteOffset, arr.length);
   const out = Buffer.allocUnsafe(arr.length * 2);
   for (let i = 0; i < arr.length; i++) {
-    out.writeUInt16LE(float32ToFloat16Bits(arr[i]), i * 2);
+    out.writeUInt16LE(float32BitsToFloat16Bits(bits[i]), i * 2);
   }
   return out.toString("base64");
 }
@@ -94,7 +88,7 @@ export function base64ToFloat16AsFloat32(b64: string): Float32Array {
   const n = buf.byteLength >> 1;
   const out = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    out[i] = float16BitsToFloat32(buf.readUInt16LE(i * 2));
+    out[i] = float16Values[buf.readUInt16LE(i * 2)];
   }
   return out;
 }
@@ -104,15 +98,17 @@ export function decodePersistedEmbedding(b64: string, codec?: string): Float32Ar
   return base64ToFloat32(b64);
 }
 
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+function cosineSimilarity(a: Float32Array, b: Uint16Array): number {
   if (a.length !== b.length) return 0;
   let dot = 0;
   let normA = 0;
   let normB = 0;
   for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
+    const av = a[i];
+    const bv = float16Values[b[i]];
+    dot += av * bv;
+    normA += av * av;
+    normB += bv * bv;
   }
   const denom = Math.sqrt(normA) * Math.sqrt(normB);
   return denom === 0 ? 0 : dot / denom;
@@ -120,29 +116,56 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
 
 export type VectorEntry = { embedding: Float32Array; sessionId: string };
 
+type ResidentVectorEntry = { embedding: Uint16Array; sessionId: string };
+
 export type VectorChangeListener = (obsId: string | null, entry: VectorEntry | null) => void;
 
 export class VectorIndex {
-  private vectors: Map<string, VectorEntry> = new Map();
+  private vectors: Map<string, ResidentVectorEntry> = new Map();
   private changes: Map<string, boolean> = new Map();
   private listener: VectorChangeListener | null = null;
+  private mutationEpoch = 0;
+
+  get revision(): number {
+    return this.mutationEpoch;
+  }
 
   setChangeListener(listener: VectorChangeListener | null): void {
     this.listener = listener;
   }
 
   add(obsId: string, sessionId: string, embedding: Float32Array): void {
-    const entry = { embedding, sessionId };
+    this.mutationEpoch++;
+    const entry = { embedding: toFloat16(embedding), sessionId };
     this.vectors.set(obsId, entry);
     this.changes.set(obsId, true);
-    this.listener?.(obsId, entry);
+    this.listener?.(obsId, { embedding: toFloat32(entry.embedding), sessionId });
   }
 
   remove(obsId: string): void {
-    if (this.vectors.delete(obsId)) {
-      this.changes.set(obsId, false);
-      this.listener?.(obsId, null);
+    this.mutationEpoch++;
+    this.vectors.delete(obsId);
+    this.changes.set(obsId, false);
+    this.listener?.(obsId, null);
+  }
+
+  evictResident(obsId: string): void {
+    this.vectors.delete(obsId);
+  }
+
+  keys(): IterableIterator<string> {
+    return this.vectors.keys();
+  }
+
+  prune(keep: (id: string) => boolean): number {
+    let removed = 0;
+    for (const id of this.vectors.keys()) {
+      if (keep(id)) continue;
+      this.vectors.delete(id);
+      this.changes.set(id, false);
+      removed++;
     }
+    return removed;
   }
 
   has(obsId: string): boolean {
@@ -150,15 +173,32 @@ export class VectorIndex {
   }
 
   get(obsId: string): VectorEntry | undefined {
-    return this.vectors.get(obsId);
+    const entry = this.vectors.get(obsId);
+    return entry && { embedding: toFloat32(entry.embedding), sessionId: entry.sessionId };
   }
 
-  entries(): IterableIterator<[string, VectorEntry]> {
-    return this.vectors.entries();
+  getFloat16(obsId: string): Uint16Array | undefined {
+    return this.vectors.get(obsId)?.embedding.slice();
+  }
+
+  *entries(): IterableIterator<[string, VectorEntry]> {
+    for (const [obsId, entry] of this.vectors) {
+      yield [obsId, { embedding: toFloat32(entry.embedding), sessionId: entry.sessionId }];
+    }
   }
 
   loadPersisted(obsId: string, sessionId: string, embedding: Float32Array): void {
-    this.vectors.set(obsId, { embedding, sessionId });
+    this.vectors.set(obsId, { embedding: toFloat16(embedding), sessionId });
+  }
+
+  loadPersistedFloat16(obsId: string, sessionId: string, embedding: Uint16Array): void {
+    this.vectors.set(obsId, { embedding: new Uint16Array(embedding), sessionId });
+  }
+
+  get residentByteLength(): number {
+    let bytes = 0;
+    for (const entry of this.vectors.values()) bytes += entry.embedding.byteLength;
+    return bytes;
   }
 
   get pendingChanges(): number {
@@ -243,24 +283,16 @@ export class VectorIndex {
   }
 
   clear(): void {
-    const hadVectors = this.vectors.size > 0;
+    this.mutationEpoch++;
+    for (const obsId of this.changes.keys()) this.changes.set(obsId, false);
     for (const obsId of this.vectors.keys()) this.changes.set(obsId, false);
     this.vectors.clear();
-    if (hadVectors) this.listener?.(null, null);
+    this.listener?.(null, null);
   }
 
   restoreFrom(other: VectorIndex): void {
-    const src = (other as any).vectors as Map<
-      string,
-      { embedding: Float32Array; sessionId: string }
-    >;
-    this.vectors = new Map();
-    for (const [obsId, entry] of src) {
-      this.vectors.set(obsId, {
-        embedding: new Float32Array(entry.embedding),
-        sessionId: entry.sessionId,
-      });
-    }
+    // Ingest and accessors copy, so these immutable resident arrays have no mutable aliases.
+    this.vectors = new Map(other.vectors);
     this.changes = new Map(other.changes);
   }
 
@@ -270,7 +302,7 @@ export class VectorIndex {
       data.push([
         obsId,
         {
-          embedding: float32ToBase64(entry.embedding),
+          embedding: float32ToBase64(toFloat32(entry.embedding)),
           sessionId: entry.sessionId,
         },
       ]);
@@ -298,7 +330,7 @@ export class VectorIndex {
         )
           continue;
         idx.vectors.set(obsId, {
-          embedding: base64ToFloat32(entry.embedding),
+          embedding: toFloat16(base64ToFloat32(entry.embedding)),
           sessionId: entry.sessionId,
         });
       } catch {

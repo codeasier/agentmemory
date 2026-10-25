@@ -16,12 +16,14 @@ import {
   isDropStaleIndexEnabled,
   getVectorBackfillMax,
   getAuditRetentionMonths,
+  getInvocationTimeoutMs,
   getStateBackend,
   isSessionSweepEnabled,
   isGraphCompactOnBootEnabled,
   getSessionSweepStaleHours,
   isEvictionEnabled,
   getEvictionIntervalMs,
+  getMaxIndexedObservations,
 } from "./config.js";
 import {
   createProvider,
@@ -58,6 +60,7 @@ import {
   rebuildKeywordIndex,
   markKeywordRebuildPending,
   getSearchIndex,
+  prepareObservationWindow,
   setVectorIndex,
   setEmbeddingProvider,
   setIndexPersistence,
@@ -233,10 +236,11 @@ async function main() {
     `REST API: http://localhost:${config.restPort}/agentmemory/*`,
   );
   bootLog(`Streams: ws://localhost:${config.streamsPort}`);
+  logger.info("Worker invocation timeout", { timeoutMs: getInvocationTimeoutMs() });
 
   const sdk = withWriteScrubbing(registerWorker(config.engineUrl, {
     workerName: "agentmemory",
-    invocationTimeoutMs: 180000,
+    invocationTimeoutMs: getInvocationTimeoutMs(),
     otel: {
       serviceName: OTEL_CONFIG.serviceName,
       serviceVersion: OTEL_CONFIG.serviceVersion,
@@ -460,7 +464,14 @@ async function main() {
         : undefined,
   });
 
-  const indexPersistence = new IndexPersistence(kv, vectorIndex);
+  const observationLimit = getMaxIndexedObservations();
+  if (observationLimit > 0) {
+    await prepareObservationWindow(kv);
+    markKeywordRebuildPending();
+  }
+  const indexPersistence = new IndexPersistence(kv, vectorIndex, {
+    shouldLoadVector: observationLimit > 0 ? (id) => getSearchIndex().has(id) : undefined,
+  });
   setIndexPersistence(indexPersistence);
   let orphanFlushTimer: ReturnType<typeof setTimeout> | null = null;
   let shuttingDown = false;
@@ -539,7 +550,7 @@ async function main() {
   const vectorCountShortfall =
     Boolean(loaded?.vector) &&
     loaded?.expectedCount !== undefined &&
-    loaded.vector!.size < loaded.expectedCount;
+    (loaded.loadedCount ?? loaded.vector!.size) < loaded.expectedCount;
   let vectorBackfillSince =
     !loaded || loaded.state === "unavailable"
       ? undefined

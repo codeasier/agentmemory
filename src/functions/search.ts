@@ -15,6 +15,7 @@ import {
   getVectorBackfillMax,
   isAgentScopeIsolated,
   isVectorBackfillAllEnabled,
+  getMaxIndexedObservations,
 } from "../config.js";
 
 let index: SearchIndex | null = null
@@ -86,8 +87,28 @@ export function setPendingVectorBackfillCount(n: number): void {
 }
 
 export function getSearchIndex(): SearchIndex {
-  if (!index) index = new SearchIndex()
+  if (!index) index = new SearchIndex({
+    maxObservations: getMaxIndexedObservations() || Infinity,
+    onEvict: (id) => vectorIndex?.evictResident(id),
+  })
   return index
+}
+
+export function isIndexableObservation(obs: Pick<CompressedObservation, 'title' | 'narrative'>): boolean {
+  return typeof obs.title === 'string' && obs.title.trim().length > 0 &&
+    typeof obs.narrative === 'string' && obs.narrative.trim().length > 0
+}
+
+function isOutsideObservationWindow(id: string): boolean {
+  const idx = getSearchIndex()
+  return id.startsWith('obs_') && Number.isFinite(idx.observationLimit) && !idx.has(id)
+}
+
+function trimResidentWindow(): void {
+  if (!vectorIndex || !Number.isFinite(getSearchIndex().observationLimit)) return
+  for (const id of [...vectorIndex.keys()]) {
+    if (isOutsideObservationWindow(id)) vectorIndex.evictResident(id)
+  }
 }
 
 export function setVectorIndex(idx: VectorIndex | null): void {
@@ -159,6 +180,7 @@ type IndexPersistenceHook = {
   scheduleSave: () => void;
   save: () => Promise<void>;
   status?: () => IndexPersistenceStatus;
+  reconcileIndex?: (keep: (id: string) => boolean) => number;
 };
 
 let indexPersistence: IndexPersistenceHook | null = null;
@@ -209,6 +231,7 @@ export async function vectorIndexAddGuarded(
   const vi = vectorIndex
   const ep = currentEmbeddingProvider
   if (!vi || !ep) return false
+  if (isOutsideObservationWindow(id)) return false
   let embedding: Float32Array
   try {
     embedding = await ep.embed(clipEmbedInput(text))
@@ -231,6 +254,7 @@ export async function vectorIndexAddGuarded(
     })
     return false
   }
+  if (isOutsideObservationWindow(id)) return false
   if (commit) {
     try {
       const committed = await commit(embedding)
@@ -272,6 +296,8 @@ export async function vectorIndexAddBatchGuarded(
   const vi = vectorIndex
   const ep = currentEmbeddingProvider
   if (!vi || !ep || items.length === 0) return { ok: 0, fail: 0 }
+  items = items.filter((item) => !isOutsideObservationWindow(item.id))
+  if (items.length === 0) return { ok: 0, fail: 0 }
 
   let embeddings: Float32Array[]
   try {
@@ -301,6 +327,7 @@ export async function vectorIndexAddBatchGuarded(
   let fail = 0
   for (let i = 0; i < items.length; i++) {
     const item = items[i]
+    if (isOutsideObservationWindow(item.id)) continue
     const embedding = embeddings[i]
     if (embedding.length !== ep.dimensions) {
       logger.warn("vector-index add batch: dimension mismatch — skipping item", {
@@ -390,8 +417,7 @@ export async function indexRecords(
     count++
   }
   for (const obs of observations) {
-    if (!obs.title || !obs.narrative) continue
-    idx.add(obs)
+    if (!isIndexableObservation(obs) || !idx.add(obs)) continue
     await enqueue({
       id: obs.id,
       sessionId: obs.sessionId,
@@ -417,7 +443,7 @@ export async function findUnindexedObservations(
     if (known > 0 && known <= (indexed.get(session.id) ?? 0)) continue
     const observations = await kv.list<CompressedObservation>(KV.observations(session.id))
     for (const obs of observations) {
-      if (!obs.title || !obs.narrative || idx.has(obs.id)) continue
+      if (!isIndexableObservation(obs) || idx.has(obs.id) || !idx.acceptsObservation(obs)) continue
       missing.push(obs)
     }
   }
@@ -524,13 +550,22 @@ async function listSessionsWithRetry(kv: StateKV): Promise<Session[] | null> {
 
 type KeywordRebuildResult = { documents: number; vectorJobs: VectorBackfillJob[]; fullBackfillPending: number }
 
+export async function prepareObservationWindow(kv: StateKV): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await rebuildKeywordIndex(kv, undefined, { reconcileVectors: false })
+    if (!isBm25RebuildIncomplete()) return
+  }
+  throw new Error('Cannot select a bounded observation window: the state scan is incomplete. Retry startup after the state store recovers.')
+}
+
 export async function rebuildKeywordIndex(
   kv: StateKV,
   vectorBackfillSince?: string | null,
+  options: { reconcileVectors?: boolean } = {},
 ): Promise<KeywordRebuildResult> {
   keywordRebuildsRunning++
   try {
-    return await runKeywordRebuild(kv, vectorBackfillSince)
+    return await runKeywordRebuild(kv, vectorBackfillSince, options.reconcileVectors !== false)
   } finally {
     keywordRebuildsRunning--
     keywordRebuildPending = false
@@ -541,6 +576,7 @@ export async function rebuildKeywordIndex(
 async function runKeywordRebuild(
   kv: StateKV,
   vectorBackfillSince?: string | null,
+  reconcileVectors = true,
 ): Promise<KeywordRebuildResult> {
   const idx = getSearchIndex()
   idx.clear()
@@ -548,12 +584,15 @@ async function runKeywordRebuild(
   bm25RebuildIncomplete = false
   const vi = vectorIndex
   const backfillEligible = Boolean(vi && currentEmbeddingProvider) && vectorBackfillSince !== undefined
+  const vectorRevision = vi?.revision
   const wholeStoreBackfill = vectorBackfillSince === null
   const backfillGated = backfillEligible && wholeStoreBackfill && !isVectorBackfillAllEnabled()
   const backfillActive = backfillEligible && !backfillGated
   const cutoff = typeof vectorBackfillSince === 'string' ? Date.parse(vectorBackfillSince) : Number.NaN
   const backfillCap = backfillActive ? getVectorBackfillMax() : 0
   const vectorJobs: VectorBackfillJob[] = []
+  const eligibleIds = new Set<string>()
+  const gatedIds = Number.isFinite(idx.observationLimit) ? new Set<string>() : null
   let fullBackfillPending = 0
   const consider = (
     id: string,
@@ -565,10 +604,11 @@ async function runKeywordRebuild(
     if (!backfillEligible || vi?.has(id)) return
     if (!Number.isNaN(cutoff) && !(Date.parse(timestamp ?? '') > cutoff)) return
     if (backfillGated) {
-      fullBackfillPending++
+      if (gatedIds) gatedIds.add(id)
+      else fullBackfillPending++
       return
     }
-    if (!backfillActive || (wholeStoreBackfill && vectorJobs.length >= backfillCap)) return
+    if (!backfillActive || wholeStoreBackfill) return
     vectorJobs.push({ id, sessionId, text, context: { kind, logId: id } })
   }
 
@@ -580,11 +620,13 @@ async function runKeywordRebuild(
     for (const memory of memories) {
       if (memory.isLatest === false) continue
       if (!memory.title || !memory.content) continue
+      eligibleIds.add(memory.id)
       idx.add(memoryToObservation(memory))
       consider(memory.id, memory.sessionIds?.[0] ?? 'memory', memory.title + ' ' + memory.content, memory.createdAt, "memory")
       documents++
     }
   } catch (err) {
+    bm25RebuildIncomplete = true
     logger.warn('rebuildKeywordIndex: failed to load memories', {
       error: err instanceof Error ? err.message : String(err),
     })
@@ -594,7 +636,8 @@ async function runKeywordRebuild(
   if (sessions === null) {
     bm25RebuildIncomplete = true
     if (memoriesLoaded) memoryIndexReady = true
-    return { documents, vectorJobs, fullBackfillPending }
+    trimResidentWindow()
+    return { documents, vectorJobs, fullBackfillPending: gatedIds?.size ?? fullBackfillPending }
   }
   const failedSessions: string[] = []
   for (let batch = 0; batch < sessions.length; batch += 10) {
@@ -610,18 +653,59 @@ async function runKeywordRebuild(
       })
     )
     for (const obs of results.flat()) {
-      if (!obs.title || !obs.narrative) continue
-      idx.add(obs)
+      if (!isIndexableObservation(obs)) continue
+      eligibleIds.add(obs.id)
+      if (!idx.add(obs)) continue
       consider(obs.id, obs.sessionId, obs.title + ' ' + obs.narrative, obs.timestamp, "observation")
       documents++
+    }
+    for (let i = vectorJobs.length - 1; i >= 0; i--) {
+      if (!idx.has(vectorJobs[i].id)) vectorJobs.splice(i, 1)
+    }
+    if (gatedIds) {
+      for (const id of gatedIds) if (!idx.has(id)) gatedIds.delete(id)
     }
   }
   if (failedSessions.length > 0) {
     bm25RebuildIncomplete = true
     logger.warn('rebuildKeywordIndex: failed to load observations for sessions', { failedSessions })
   }
+  if (wholeStoreBackfill && backfillActive) {
+    for (const id of idx.keys()) {
+      if (vectorJobs.length >= backfillCap) break
+      if (vi?.has(id)) continue
+      const sessionId = idx.sessionOf(id)
+      try {
+        if (id.startsWith(MEMORY_ID_PREFIX)) {
+          const memory = await kv.get<Memory>(KV.memories, id)
+          if (!memory?.title || !memory.content || memory.isLatest === false || !idx.has(id)) continue
+          vectorJobs.push({ id, sessionId: memory.sessionIds?.[0] ?? 'memory', text: memory.title + ' ' + memory.content, context: { kind: 'memory', logId: id } })
+        } else if (sessionId) {
+          const obs = await kv.get<CompressedObservation>(KV.observations(sessionId), id)
+          if (!obs || !isIndexableObservation(obs) || !idx.has(id)) continue
+          vectorJobs.push({ id, sessionId, text: obs.title + ' ' + obs.narrative, context: { kind: 'observation', logId: id } })
+        }
+      } catch (err) {
+        bm25RebuildIncomplete = true
+        logger.warn('Could not read selected backfill record', { id, error: err instanceof Error ? err.message : String(err) })
+      }
+    }
+  }
+  if (reconcileVectors && memoriesLoaded && !bm25RebuildIncomplete && vi && vi.revision === vectorRevision) {
+    const keep = (id: string) => eligibleIds.has(id)
+    const removed = indexPersistence?.reconcileIndex
+      ? indexPersistence.reconcileIndex(keep)
+      : vi.prune(keep)
+    if (removed > 0) {
+      scheduleIndexSave()
+      logger.info('Pruned ineligible search vectors after complete rebuild', { removed })
+    }
+  }
+  trimResidentWindow()
   if (memoriesLoaded) memoryIndexReady = true
-  return { documents, vectorJobs, fullBackfillPending }
+  documents = idx.size
+  fullBackfillPending = gatedIds?.size ?? fullBackfillPending
+  return { documents, vectorJobs: backfillGated ? [] : wholeStoreBackfill ? vectorJobs.slice(0, backfillCap) : vectorJobs, fullBackfillPending }
 }
 
 const BACKFILL_SAVE_EVERY_BATCHES = 10
@@ -753,7 +837,7 @@ export function registerSearchFunction(sdk: IIIClient, kv: StateKV): void {
         // Share one rebuild across concurrent cold-start queries so they
         // don't each walk the whole corpus and saturate the pool.
         if (!rebuildPromise) {
-          rebuildPromise = rebuildKeywordIndex(kv)
+          rebuildPromise = rebuildKeywordIndex(kv, undefined, { reconcileVectors: false })
             .then((result) => {
               logger.info('Search index rebuilt', { entries: result.documents })
               return result.documents

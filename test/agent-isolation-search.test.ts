@@ -23,6 +23,7 @@ const configState = {
 };
 
 vi.mock("../src/config.js", () => ({
+  getMaxIndexedObservations: () => 0,
   getAgentId: () => configState.agentId,
   isAgentScopeIsolated: () => configState.isolated,
 }));
